@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.10] - 2026-06-17
+
+Completes the v0.2.9 non-breaking batch with three dashboard/CI follow-ups that belonged to the same
+improvement set. No breaking changes.
+
+### Fixed
+
+- **MessageTester (dashboard) resolves the recipient through the engine**, not a hand-built `…@c.us` JID:
+  it calls the check-number endpoint for the engine-canonical chat id and surfaces a clear "not registered
+  on WhatsApp" message for unknown numbers, instead of silently sending to a guessed id (#265). New
+  `messageTester.notOnWhatsApp` string across all 8 locales. (#279)
+- **Dashboard message bubbles use the engine-neutral `MessageType` vocabulary end-to-end** — incoming
+  websocket/revoked payloads are coerced via `asMessageType()`, and an attachment's optimistic bubble is
+  typed from its MIME (e.g. a PDF is `document`, not `application`), matching the backend normalization
+  shipped in #270. (#281)
+
+### Internal
+
+- CI: bump `docker/setup-qemu-action` v3 → v4 (Node 24), clearing the Node-20 deprecation warning on the
+  image-build/publish jobs. (#280)
+
 ## [0.2.9] - 2026-06-17
 
 A reliability, security, and accessibility hardening release — no breaking changes. It tightens RBAC on

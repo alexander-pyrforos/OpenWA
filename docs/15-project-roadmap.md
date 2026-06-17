@@ -60,6 +60,7 @@ timeline
 | v0.2.7  | Typing simulation, delete-chat, engine-agnostic groundwork | ✅ Released |
 | v0.2.8  | Engine decoupling (ack/type/JID), templates, @lid→phone    | ✅ Released |
 | v0.2.9  | Reliability/security/a11y hardening (RBAC, deps, shutdown, retention) | ✅ Released |
+| v0.2.10 | Dashboard/CI follow-ups (MessageTester JID, neutral MessageType, qemu v4) | ✅ Released |
 | v0.3.0  | Deployment simplification (single-port UI, no Traefik) — next breaking release | 📋 Planned  |
 | v1.0.0  | Enterprise Ready (Baileys engine, K8s)                     | 📋 Planned  |
 
