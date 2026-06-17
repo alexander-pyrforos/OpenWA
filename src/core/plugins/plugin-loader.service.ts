@@ -291,9 +291,7 @@ export class PluginLoaderService implements OnModuleInit {
   private assertSessionAllowed(manifest: PluginManifest, sessionId: string): void {
     const allowed = manifest.sessions ?? ['*'];
     if (!allowed.includes('*') && !allowed.includes(sessionId)) {
-      throw new PluginCapabilityError(
-        `Plugin ${manifest.id} is not permitted to act on session ${sessionId}`,
-      );
+      throw new PluginCapabilityError(`Plugin ${manifest.id} is not permitted to act on session ${sessionId}`);
     }
   }
 
@@ -306,9 +304,7 @@ export class PluginLoaderService implements OnModuleInit {
     this.assertSessionAllowed(manifest, sessionId);
     const engine = this.moduleRef.get(SessionService, { strict: false }).getEngine(sessionId);
     if (!engine) {
-      throw new PluginCapabilityError(
-        `Session ${sessionId} has no active engine (unknown or not started)`,
-      );
+      throw new PluginCapabilityError(`Session ${sessionId} has no active engine (unknown or not started)`);
     }
     return engine;
   }

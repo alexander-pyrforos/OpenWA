@@ -11,17 +11,12 @@ import { IncomingMessage } from '../../../engine/interfaces/whatsapp-engine.inte
 
 export class AutoReplyPlugin implements IPlugin {
   onEnable(context: PluginContext): Promise<void> {
-    context.registerHook('message:received', ctx =>
-      this.onMessage(context, ctx as HookContext<IncomingMessage>),
-    );
+    context.registerHook('message:received', ctx => this.onMessage(context, ctx as HookContext<IncomingMessage>));
     context.logger.log('Auto-reply reference plugin enabled');
     return Promise.resolve();
   }
 
-  private async onMessage(
-    context: PluginContext,
-    ctx: HookContext<IncomingMessage>,
-  ): Promise<HookResult> {
+  private async onMessage(context: PluginContext, ctx: HookContext<IncomingMessage>): Promise<HookResult> {
     const message = ctx.data;
 
     // Reply only to inbound, non-group, engine-originated messages; never to our own sends.

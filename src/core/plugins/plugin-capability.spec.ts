@@ -50,9 +50,9 @@ describe('PluginLoaderService capability facade — ctx.messages', () => {
   });
 
   function contextFor(plugin: PluginInstance): PluginContext {
-    return (
-      loader as unknown as { createPluginContext: (p: PluginInstance) => PluginContext }
-    ).createPluginContext(plugin);
+    return (loader as unknown as { createPluginContext: (p: PluginInstance) => PluginContext }).createPluginContext(
+      plugin,
+    );
   }
 
   it('messages.sendText delegates to MessageService.sendText with a wrapped dto', async () => {
@@ -110,9 +110,9 @@ describe('PluginLoaderService capability facade — ctx.engine', () => {
   }
 
   function contextFor(plugin: PluginInstance): PluginContext {
-    return (
-      loader as unknown as { createPluginContext: (p: PluginInstance) => PluginContext }
-    ).createPluginContext(plugin);
+    return (loader as unknown as { createPluginContext: (p: PluginInstance) => PluginContext }).createPluginContext(
+      plugin,
+    );
   }
 
   it('engine.getGroupInfo delegates to SessionService.getEngine(id).getGroupInfo', async () => {

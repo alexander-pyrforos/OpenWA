@@ -101,12 +101,7 @@ export class PluginCapabilityError extends Error {
 
 export interface PluginMessagingCapability {
   sendText(sessionId: string, chatId: string, text: string): Promise<MessageResponseDto>;
-  reply(
-    sessionId: string,
-    chatId: string,
-    quotedMessageId: string,
-    text: string,
-  ): Promise<MessageResponseDto>;
+  reply(sessionId: string, chatId: string, quotedMessageId: string, text: string): Promise<MessageResponseDto>;
 }
 
 export interface PluginEngineReadCapability {
