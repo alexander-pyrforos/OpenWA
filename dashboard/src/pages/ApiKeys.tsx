@@ -12,6 +12,7 @@ import type { ApiKey } from '../services/api';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useApiKeysQuery, useCreateApiKeyMutation, useDeleteApiKeyMutation, useRevokeApiKeyMutation } from '../hooks/queries';
 import { PageHeader } from '../components/PageHeader';
+import { copyToClipboard } from '../utils/clipboard';
 import './ApiKeys.css';
 
 const roleNames = ['admin', 'operator', 'viewer'] as const;
@@ -96,31 +97,8 @@ export function ApiKeys() {
     });
   };
 
-  const copyToClipboard = (text: string, id: string) => {
-    // The async Clipboard API is only available in a secure context (HTTPS / localhost). Over
-    // plain HTTP on a LAN IP `navigator.clipboard` is undefined, so fall back to a hidden
-    // textarea + execCommand('copy') instead of throwing.
-    const copied = (() => {
-      if (navigator.clipboard?.writeText) {
-        void navigator.clipboard.writeText(text);
-        return true;
-      }
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.setAttribute('readonly', '');
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        return ok;
-      } catch {
-        return false;
-      }
-    })();
-    if (copied) {
+  const handleCopy = async (text: string, id: string) => {
+    if (await copyToClipboard(text)) {
       setCopied(id);
       setTimeout(() => setCopied(null), 2000);
     }
@@ -270,7 +248,7 @@ export function ApiKeys() {
                     >
                       {createdKey}
                     </code>
-                    <button className="btn-primary" onClick={() => copyToClipboard(createdKey, 'modal')}>
+                    <button className="btn-primary" onClick={() => void handleCopy(createdKey, 'modal')}>
                       {copied === 'modal' ? <Check size={16} /> : <Copy size={16} />}
                     </button>
                   </div>

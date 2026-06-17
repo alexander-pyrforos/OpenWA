@@ -2,11 +2,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   sessionApi,
   webhookApi,
+  templateApi,
   apiKeyApi,
   auditApi,
   infraApi,
   pluginsApi,
   type Webhook,
+  type TemplatePayload,
 } from '../services/api';
 
 // ── Query Keys ────────────────────────────────────────────────────────
@@ -17,6 +19,7 @@ export const queryKeys = {
   sessionGroups: (sessionId: string) => ['sessions', sessionId, 'groups'] as const,
   sessionChats: (sessionId: string) => ['sessions', sessionId, 'chats'] as const,
   webhooks: ['webhooks'] as const,
+  templates: (sessionId: string) => ['sessions', sessionId, 'templates'] as const,
   apiKeys: ['apiKeys'] as const,
   logs: (params: { severity?: string; page: number; limit: number }) =>
     ['logs', params] as const,
@@ -143,6 +146,50 @@ export function useDeleteWebhookMutation() {
       webhookApi.delete(params.sessionId, params.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
+    },
+  });
+}
+
+// ── Template Queries ─────────────────────────────────────────────────────────
+
+export function useTemplatesQuery(sessionId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.templates(sessionId),
+    queryFn: () => templateApi.list(sessionId),
+    enabled: enabled && !!sessionId,
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { sessionId: string; data: TemplatePayload }) =>
+      templateApi.create(params.sessionId, params.data),
+    onSuccess: (_template, params) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.templates(params.sessionId) });
+    },
+  });
+}
+
+export function useUpdateTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { sessionId: string; id: string; data: Partial<TemplatePayload> }) =>
+      templateApi.update(params.sessionId, params.id, params.data),
+    onSuccess: (_template, params) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.templates(params.sessionId) });
+    },
+  });
+}
+
+export function useDeleteTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { sessionId: string; id: string }) =>
+      templateApi.delete(params.sessionId, params.id),
+    onSuccess: (_template, params) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.templates(params.sessionId) });
     },
   });
 }

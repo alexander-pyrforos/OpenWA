@@ -58,6 +58,7 @@
     "sessions": "Sessions",
     "chats": "Discussions",
     "webhooks": "Webhooks",
+    "templates": "Templates",
     "apiKeys": "Clés API",
     "messageTester": "Testeur de messages",
     "infrastructure": "Infrastructure",
@@ -287,6 +288,51 @@
       "session.disconnected": "Lorsqu'une session se déconnecte",
       "session.qr": "Lorsqu'un code QR est généré",
       "all": "Tous les événements"
+    }
+  },
+  "templates": {
+    "title": "Templates",
+    "subtitle": "Create reusable message templates for each WhatsApp session",
+    "createTitle": "Create Template",
+    "editTitle": "Edit Template",
+    "newTemplate": "New Template",
+    "createTemplate": "Create Template",
+    "saveChanges": "Save Changes",
+    "viewOnly": "View Only",
+    "noSessions": "No sessions",
+    "sessionHint": "Saved under {{name}}",
+    "namePlaceholder": "e.g., order-confirmation",
+    "header": "Header",
+    "headerPlaceholder": "Optional intro line",
+    "body": "Body",
+    "bodyPlaceholder": "Hi {{customer}}, your order {{orderId}} is ready.",
+    "footer": "Footer",
+    "footerPlaceholder": "Optional closing line",
+    "previewTitle": "Preview",
+    "previewValuePlaceholder": "Sample value",
+    "previewEmpty": "Start writing a template to preview it here.",
+    "noPlaceholders": "Use {{name}} placeholders to test substitutions.",
+    "savedTitle": "Saved Templates",
+    "count": "{{count}} total",
+    "deleteTitle": "Delete Template",
+    "deleteConfirm": "Delete template \"{{name}}\"? This action cannot be undone.",
+    "actions": {
+      "copyName": "Copy template name"
+    },
+    "empty": {
+      "title": "No templates saved",
+      "description": "Create a reusable template to speed up common replies and notifications.",
+      "noSessionsTitle": "No sessions available",
+      "noSessionsDesc": "Create a WhatsApp session before adding templates."
+    },
+    "toasts": {
+      "created": "Template created successfully",
+      "createFailed": "Failed to create template: {{message}}",
+      "updated": "Template updated successfully",
+      "updateFailed": "Failed to update template: {{message}}",
+      "deleted": "Template deleted successfully",
+      "deleteFailed": "Failed to delete template: {{message}}",
+      "copied": "Template name copied"
     }
   },
   "apiKeys": {
