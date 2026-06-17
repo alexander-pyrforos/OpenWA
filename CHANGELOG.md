@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Adds the Tier-2 plugin capability layer — the foundation for shipping bot-shaped features as extension
+plugins instead of in core (#265).
+
+> ⚠️ **Breaking (plugin API):** `PluginContext.getService` is removed. It was a stub returning `undefined`
+> with no real consumers; out-of-tree plugins must migrate to the new `ctx.messages` / `ctx.engine`
+> capabilities. As a breaking change this is slated for the next minor (v0.3.0).
+
+### Added
+
+- **Plugin capability layer (Tier-2 extension plugins):** scoped `ctx.messages` (`sendText` / `reply`,
+  routed through `MessageService` so persistence and the send pipeline are preserved) and read-only
+  `ctx.engine` (`getGroupInfo` / `getContacts` / `getContactById` / `checkNumberExists` / `getChats`) on
+  `PluginContext`, replacing the stubbed `getService`. A manifest-declared `sessions` scope is enforced at
+  the facade before any engine access (default `['*']`), and a capability call to a dead/unstarted session
+  fails with `PluginCapabilityError` instead of a raw error. (#294)
+- **`HookManager` re-entrancy guard** (`AsyncLocalStorage`): a plugin that sends from inside a hook handler
+  can no longer recurse into the same event (synchronous re-entry; the async `message:sent` echo loop is
+  documented as out of scope for now). (#294)
+- **`auto-reply` reference extension plugin**, first-party and **registered disabled by default** — enable
+  it via `POST /plugins/auto-reply/enable` to exercise the capability layer end-to-end. (#294)
+
 ## [0.2.10] - 2026-06-17
 
 Completes the v0.2.9 non-breaking batch with three dashboard/CI follow-ups that belonged to the same
