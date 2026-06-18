@@ -41,30 +41,25 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
     await this.repo.delete({ sessionId });
   }
 
-  /**
-   * Per-session row cap: keep the newest N rows, delete the rest.
-   * Uses a NOT IN subquery over the N keep-IDs so ties in createdAt (fast inserts in tests)
-   * don't incorrectly evict recently added rows.
-   */
+  /** Per-session row cap: keep the newest N, delete the rest. Deterministic via (createdAt, id). */
   private async enforceLimit(sessionId: string): Promise<void> {
     const limit = positiveIntFromEnv('BAILEYS_MESSAGE_STORE_LIMIT', 5000);
-    const total = await this.repo.count({ where: { sessionId } });
-    if (total <= limit) {
-      return;
-    }
-    // Find the IDs of the N rows to keep (newest N by insertion order; waMessageId as stable tiebreaker).
-    const keepRows = await this.repo.find({
+    const cutoff = await this.repo.find({
       where: { sessionId },
-      order: { createdAt: 'DESC', waMessageId: 'DESC' },
-      take: limit,
-      select: ['id'],
+      order: { createdAt: 'DESC', id: 'DESC' },
+      skip: limit,
+      take: 1,
+      select: ['id', 'createdAt'],
     });
-    const keepIds = keepRows.map(r => r.id);
+    if (cutoff.length === 0) {
+      return; // under the cap — nothing to evict
+    }
+    const { id, createdAt } = cutoff[0];
     await this.repo
       .createQueryBuilder()
       .delete()
       .where('sessionId = :sessionId', { sessionId })
-      .andWhere('id NOT IN (:...keepIds)', { keepIds })
+      .andWhere('(createdAt < :createdAt OR (createdAt = :createdAt AND id <= :id))', { createdAt, id })
       .execute();
   }
 }
