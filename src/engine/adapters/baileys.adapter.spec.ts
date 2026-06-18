@@ -45,7 +45,13 @@ import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error'
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 
-const newAdapter = (): BaileysAdapter => new BaileysAdapter({ sessionId: 'sess-1', authDir: './data/baileys' });
+const fakeStore = {
+  put: jest.fn().mockResolvedValue(undefined),
+  getMessage: jest.fn(),
+  clearSession: jest.fn().mockResolvedValue(undefined),
+};
+const newAdapter = (): BaileysAdapter =>
+  new BaileysAdapter({ sessionId: 'sess-1', authDir: './data/baileys', messageStore: fakeStore });
 
 const noopCallbacks = (over: Partial<EngineEventCallbacks> = {}): EngineEventCallbacks => over;
 
@@ -417,5 +423,102 @@ describe('BaileysAdapter media sends', () => {
     await expect(
       adapter.sendImageMessage('x', { mimetype: 'image/png', data: Buffer.from([1]) }),
     ).rejects.toBeInstanceOf(EngineNotReadyError);
+  });
+});
+
+describe('BaileysAdapter store-backed ops', () => {
+  beforeEach(() => {
+    fakeSock.user = { id: '628999:1@s.whatsapp.net', name: 'Me' };
+    jest.clearAllMocks();
+    fakeSock.sendMessage.mockResolvedValue({
+      key: { id: 'OUT', remoteJid: '628111@s.whatsapp.net', fromMe: true },
+      messageTimestamp: 1700000009,
+    });
+  });
+
+  const ready = async (): Promise<BaileysAdapter> => {
+    const adapter = newAdapter();
+    await adapter.initialize({});
+    fakeSock.fire('connection.update', { connection: 'open' });
+    return adapter;
+  };
+
+  const stored = {
+    key: { id: 'TARGET', remoteJid: '628111@s.whatsapp.net', fromMe: false },
+    message: { conversation: 'hi' },
+  };
+
+  it('replyToMessage quotes the stored message', async () => {
+    fakeStore.getMessage.mockResolvedValue(stored);
+    const adapter = await ready();
+    await adapter.replyToMessage('628111@s.whatsapp.net', 'TARGET', 'my reply');
+    expect(fakeStore.getMessage).toHaveBeenCalledWith('sess-1', 'TARGET');
+    expect(fakeSock.sendMessage).toHaveBeenCalledWith(
+      '628111@s.whatsapp.net',
+      { text: 'my reply' },
+      { quoted: stored },
+    );
+  });
+
+  it('forwardMessage forwards the stored message', async () => {
+    fakeStore.getMessage.mockResolvedValue(stored);
+    const adapter = await ready();
+    await adapter.forwardMessage('628111@s.whatsapp.net', '628222@s.whatsapp.net', 'TARGET');
+    expect(fakeSock.sendMessage).toHaveBeenCalledWith('628222@s.whatsapp.net', { forward: stored });
+  });
+
+  it('reactToMessage sends the stored key', async () => {
+    fakeStore.getMessage.mockResolvedValue(stored);
+    const adapter = await ready();
+    await adapter.reactToMessage('628111@s.whatsapp.net', 'TARGET', '👍');
+    expect(fakeSock.sendMessage).toHaveBeenCalledWith('628111@s.whatsapp.net', {
+      react: { text: '👍', key: stored.key },
+    });
+  });
+
+  it('deleteMessage revokes via the stored key', async () => {
+    fakeStore.getMessage.mockResolvedValue(stored);
+    const adapter = await ready();
+    await adapter.deleteMessage('628111@s.whatsapp.net', 'TARGET', true);
+    expect(fakeSock.sendMessage).toHaveBeenCalledWith('628111@s.whatsapp.net', { delete: stored.key });
+  });
+
+  it('throws when the referenced message is not in the store', async () => {
+    fakeStore.getMessage.mockResolvedValue(null);
+    const adapter = await ready();
+    await expect(adapter.replyToMessage('c', 'GONE', 'x')).rejects.toThrow(/not found/i);
+  });
+
+  it('deleteMessage for-me (forEveryone=false) is not supported', async () => {
+    const adapter = await ready();
+    await expect(adapter.deleteMessage('c', 'TARGET', false)).rejects.toBeInstanceOf(EngineNotSupportedError);
+  });
+
+  it('populates the store on an inbound message', async () => {
+    const adapter = newAdapter();
+    await adapter.initialize({});
+    fakeSock.fire('messages.upsert', {
+      type: 'notify',
+      messages: [
+        { key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'IN9' }, message: { conversation: 'hi' } },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const inboundMatcher = expect.objectContaining({ key: expect.objectContaining({ id: 'IN9' }) });
+    expect(fakeStore.put).toHaveBeenCalledWith('sess-1', inboundMatcher);
+  });
+
+  it('populates the store on an outgoing send', async () => {
+    const adapter = await ready();
+    await adapter.sendTextMessage('628111@s.whatsapp.net', 'hello');
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const outboundMatcher = expect.objectContaining({ key: expect.objectContaining({ id: 'OUT' }) });
+    expect(fakeStore.put).toHaveBeenCalledWith('sess-1', outboundMatcher);
+  });
+
+  it('clears the store on logout', async () => {
+    const adapter = await ready();
+    await adapter.logout();
+    expect(fakeStore.clearSession).toHaveBeenCalledWith('sess-1');
   });
 });

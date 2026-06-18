@@ -37,17 +37,28 @@ describe('BaileysPlugin.createEngine (opaque config)', () => {
     );
   });
 
-  it('advertises the slice-2a supported feature set', () => {
+  it('advertises the slice-2b supported feature set', () => {
     expect(new BaileysPlugin().getFeatures()).toEqual([
       'text-messages',
       'typing-indicator',
       'media-messages',
       'location-messages',
       'contact-messages',
+      'message-replies',
+      'message-forwarding',
+      'message-reactions',
+      'message-deletion',
     ]);
   });
 
   it('reports the baileys library name', () => {
     expect(new BaileysPlugin().getEngineLibrary().name).toBe('@whiskeysockets/baileys');
+  });
+
+  it('passes the message store to the adapter', () => {
+    const store = { put: jest.fn(), getMessage: jest.fn(), clearSession: jest.fn() };
+    const plugin = new BaileysPlugin(store);
+    plugin.createEngine({ sessionId: 'sess-1' });
+    expect(BaileysAdapter).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess-1', messageStore: store }));
   });
 });

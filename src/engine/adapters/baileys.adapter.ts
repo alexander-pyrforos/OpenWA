@@ -5,7 +5,7 @@ import makeWASocket, {
   getContentType,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
-import type { AnyMessageContent, WAMessage, WASocket } from '@whiskeysockets/baileys';
+import type { AnyMessageContent, MiscMessageGenerationOptions, WAMessage, WASocket } from '@whiskeysockets/baileys';
 import { buildIncomingMessageFromBaileys, mapBaileysStatus } from './baileys-message-mapper';
 import type { ILogger } from '@whiskeysockets/baileys/lib/Utils/logger.js';
 import {
@@ -185,6 +185,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
     }
     this.sock = null;
     this.setStatus(EngineStatus.DISCONNECTED);
+    await this.config.messageStore?.clearSession(this.config.sessionId).catch(() => undefined);
     // ponytail: leaves the multi-file auth dir on disk; a fresh link overwrites it. Add fs cleanup if
     // stale creds ever block re-linking.
   }
@@ -227,6 +228,13 @@ export class BaileysAdapter implements IWhatsAppEngine {
   async sendTextMessage(chatId: string, text: string): Promise<MessageResult> {
     this.ensureReady();
     const sent = await this.sock!.sendMessage(chatId, { text });
+    if (sent) {
+      void this.config.messageStore?.put(this.config.sessionId, sent).catch(err =>
+        this.logger.warn('Failed to persist sent message to store', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
     return {
       id: sent?.key?.id ?? '',
       timestamp: this.toUnixSeconds(sent?.messageTimestamp),
@@ -299,18 +307,37 @@ export class BaileysAdapter implements IWhatsAppEngine {
     });
   }
 
+  async replyToMessage(chatId: string, quotedMsgId: string, text: string): Promise<MessageResult> {
+    this.ensureReady();
+    const quoted = await this.requireStored(quotedMsgId);
+    return this.sendContent(chatId, { text }, { quoted });
+  }
+
+  async forwardMessage(fromChatId: string, toChatId: string, messageId: string): Promise<MessageResult> {
+    this.ensureReady();
+    const forward = await this.requireStored(messageId);
+    return this.sendContent(toChatId, { forward });
+  }
+
+  async reactToMessage(chatId: string, messageId: string, emoji: string): Promise<void> {
+    this.ensureReady();
+    const target = await this.requireStored(messageId);
+    await this.sock!.sendMessage(chatId, { react: { text: emoji, key: target.key } });
+  }
+
+  async deleteMessage(chatId: string, messageId: string, forEveryone = true): Promise<void> {
+    this.ensureReady();
+    if (!forEveryone) {
+      // Baileys only supports revoke-for-everyone via sendMessage; delete-for-me is not implemented.
+      throw new EngineNotSupportedError('deleteMessage (delete-for-me)');
+    }
+    const target = await this.requireStored(messageId);
+    await this.sock!.sendMessage(chatId, { delete: target.key });
+  }
+
   // ----- Gated: not supported by this minimal slice (no store) -----
   /* eslint-disable @typescript-eslint/no-unused-vars */
 
-  replyToMessage(_chatId: string, _quotedMsgId: string, _text: string): Promise<MessageResult> {
-    return this.unsupported('replyToMessage');
-  }
-  forwardMessage(_fromChatId: string, _toChatId: string, _messageId: string): Promise<MessageResult> {
-    return this.unsupported('forwardMessage');
-  }
-  reactToMessage(_chatId: string, _messageId: string, _emoji: string): Promise<void> {
-    return this.unsupported('reactToMessage');
-  }
   getMessageReactions(_chatId: string, _messageId: string): Promise<MessageReaction[]> {
     return this.unsupported('getMessageReactions');
   }
@@ -358,9 +385,6 @@ export class BaileysAdapter implements IWhatsAppEngine {
   }
   revokeGroupInviteCode(_groupId: string): Promise<string> {
     return this.unsupported('revokeGroupInviteCode');
-  }
-  deleteMessage(_chatId: string, _messageId: string, _forEveryone?: boolean): Promise<void> {
-    return this.unsupported('deleteMessage');
   }
   getChatHistory(_chatId: string, _limit?: number, _includeMedia?: boolean): Promise<IncomingMessage[]> {
     return this.unsupported('getChatHistory');
@@ -465,6 +489,11 @@ export class BaileysAdapter implements IWhatsAppEngine {
       } else {
         this.callbacks.onMessage?.(incoming);
       }
+      void this.config.messageStore?.put(this.config.sessionId, msg).catch(err =>
+        this.logger.warn('Failed to persist message to store', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
     }
   }
 
@@ -539,9 +568,31 @@ export class BaileysAdapter implements IWhatsAppEngine {
   }
 
   /** Send a Baileys content object and shape the result like the other sends. */
-  private async sendContent(chatId: string, content: AnyMessageContent): Promise<MessageResult> {
-    const sent = await this.sock!.sendMessage(chatId, content);
+  private async sendContent(
+    chatId: string,
+    content: AnyMessageContent,
+    options?: MiscMessageGenerationOptions,
+  ): Promise<MessageResult> {
+    const sent = options
+      ? await this.sock!.sendMessage(chatId, content, options)
+      : await this.sock!.sendMessage(chatId, content);
+    if (sent) {
+      void this.config.messageStore?.put(this.config.sessionId, sent).catch(err =>
+        this.logger.warn('Failed to persist sent message to store', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
     return { id: sent?.key?.id ?? '', timestamp: this.toUnixSeconds(sent?.messageTimestamp) };
+  }
+
+  /** Resolve a previously-seen message from the store, or throw a clear not-found error. */
+  private async requireStored(messageId: string): Promise<WAMessage> {
+    const found = await this.config.messageStore?.getMessage(this.config.sessionId, messageId);
+    if (!found?.key) {
+      throw new Error(`Message ${messageId} not found`);
+    }
+    return found;
   }
 
   private unsupported(method: string): Promise<any> {

@@ -1,6 +1,7 @@
 import { EngineFactory } from './engine.factory';
 import { ConfigService } from '@nestjs/config';
 import { PluginLoaderService, PluginType } from '../core/plugins';
+import { BaileysMessageStoreService } from './adapters/baileys-message-store.service';
 
 describe('EngineFactory', () => {
   const engineBlob = {
@@ -21,6 +22,9 @@ describe('EngineFactory', () => {
     return { get: jest.fn((key: string) => values[key]) } as unknown as ConfigService;
   };
 
+  const buildMessageStore = (): BaileysMessageStoreService =>
+    ({ put: jest.fn(), getMessage: jest.fn(), clearSession: jest.fn() }) as unknown as BaileysMessageStoreService;
+
   it('passes ONLY engine-neutral fields to createEngine (no Puppeteer leak)', () => {
     const createEngine = jest.fn().mockReturnValue({});
     const pluginInstance = { type: PluginType.ENGINE, createEngine };
@@ -28,7 +32,7 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn().mockReturnValue({ instance: pluginInstance }),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader);
+    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore());
     factory.create({ sessionId: 'sess-1', proxyUrl: 'http://p', proxyType: 'http' });
 
     // Plain-object (not objectContaining) assertion: any browser key (headless/puppeteerArgs/
@@ -44,7 +48,7 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn(),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader);
+    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore());
     await factory.onModuleInit();
 
     expect(registerBuiltInPlugin).toHaveBeenCalledWith(
@@ -62,7 +66,7 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn(),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader);
+    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore());
     await factory.onModuleInit();
 
     const registeredIds = registerBuiltInPlugin.mock.calls.map(call => (call as [{ id: string }])[0].id);
@@ -75,7 +79,7 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn().mockReturnValue(undefined),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader);
+    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore());
     expect(() => factory.create({ sessionId: 'sess-2' })).not.toThrow();
   });
 });
