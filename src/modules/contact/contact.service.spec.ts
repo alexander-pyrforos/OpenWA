@@ -45,9 +45,9 @@ describe('ContactService', () => {
   });
 
   it('delegates resolveContactPhone to the engine', async () => {
-    const resolveContactPhone = jest.fn().mockResolvedValue('628123456789');
+    const resolveContactPhone = jest.fn().mockResolvedValue('+628123456789');
     await expect(makeService({ resolveContactPhone }).resolveContactPhone('s1', '123@lid')).resolves.toBe(
-      '628123456789',
+      '+628123456789',
     );
     expect(resolveContactPhone).toHaveBeenCalledWith('123@lid');
   });

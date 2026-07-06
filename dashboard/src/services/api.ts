@@ -153,6 +153,14 @@ export function asMessageType(value: string | undefined): MessageType {
   return (MESSAGE_TYPES as readonly string[]).includes(value ?? '') ? (value as MessageType) : 'unknown';
 }
 
+export interface MessageContact {
+  id?: string;
+  number?: string;
+  name?: string;
+  pushName?: string;
+  shortName?: string;
+}
+
 export interface ChatMessage {
   id: string;
   waMessageId?: string;
@@ -165,6 +173,11 @@ export interface ChatMessage {
   status: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
   timestamp?: number;
   createdAt: string;
+  /** For group messages: the JID of the participant who sent the message (from is the group JID). */
+  author?: string;
+  isGroup?: boolean;
+  contact?: MessageContact;
+  senderPhone?: string | null;
   metadata?: {
     media?: { mimetype: string; filename?: string; data?: string; omitted?: boolean; sizeBytes?: number };
     quotedMessage?: { id: string; body: string };
@@ -184,6 +197,10 @@ export interface EngineHistoryMessage {
   type: string;
   timestamp: number;
   fromMe?: boolean;
+  author?: string;
+  isGroup?: boolean;
+  contact?: MessageContact;
+  senderPhone?: string | null;
   media?: { mimetype: string; filename?: string; data?: string };
 }
 

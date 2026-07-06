@@ -23,6 +23,10 @@ export function mapEngineHistoryMessage(h: EngineHistoryMessage): ChatMessage {
     status: 'read',
     timestamp: h.timestamp,
     createdAt: new Date((h.timestamp ?? 0) * 1000).toISOString(),
+    author: h.author,
+    isGroup: h.isGroup,
+    contact: h.contact,
+    senderPhone: h.senderPhone,
     metadata: h.media
       ? { media: h.media }
       : HISTORY_MEDIA_TYPES.has(h.type)

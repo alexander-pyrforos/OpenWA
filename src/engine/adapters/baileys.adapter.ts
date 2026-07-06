@@ -759,7 +759,9 @@ export class BaileysAdapter implements IWhatsAppEngine {
   // eslint-disable-next-line @typescript-eslint/require-await
   async resolveContactPhone(contactId: string): Promise<string | null> {
     this.ensureReady();
-    return this.sessionStore.resolvePhone(contactId);
+    const digits = this.sessionStore.resolvePhone(contactId);
+    // Return E.164 format (+prefix) so consumers get a standard phone number, not bare digits.
+    return digits ? `+${digits}` : null;
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await

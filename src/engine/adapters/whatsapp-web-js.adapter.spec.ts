@@ -271,8 +271,9 @@ describe('WhatsAppWebJsAdapter.getChatHistory enrichment (parity with the live p
       hasQuotedMsg: true,
       getQuotedMessage: jest.fn().mockResolvedValue({ id: { _serialized: 'Q1' }, body: 'earlier' }),
     };
+    const contact = { name: 'Alice', pushname: 'Ali', number: '621', id: { _serialized: '621@c.us' } };
     const chat = { fetchMessages: jest.fn().mockResolvedValue([locMsg, replyMsg]) };
-    const client = { getChatById: jest.fn().mockResolvedValue(chat) };
+    const client = { getChatById: jest.fn().mockResolvedValue(chat), getContactById: jest.fn().mockResolvedValue(contact) };
 
     const out = await readyAdapter(client).getChatHistory('621@c.us', 50, false);
 
@@ -283,7 +284,70 @@ describe('WhatsAppWebJsAdapter.getChatHistory enrichment (parity with the live p
       address: 'Jkt',
       url: undefined,
     });
+    expect(out[0].contact).toEqual({ name: 'Alice', pushName: 'Ali' });
     expect(out[1].quotedMessage).toEqual({ id: 'Q1', body: 'earlier' });
+    expect(out[1].contact).toEqual({ name: 'Alice', pushName: 'Ali' });
+  });
+
+  it('resolves group message sender contact via author, not group JID', async () => {
+    const groupMsg = {
+      id: { _serialized: 'GM1' },
+      from: '120363000@g.us',
+      to: 'me',
+      body: 'hello',
+      type: 'chat',
+      timestamp: 300,
+      fromMe: false,
+      author: '621@c.us',
+      hasMedia: false,
+      hasQuotedMsg: false,
+    };
+    const participant = { name: 'Bob', pushname: 'Bobby', number: '621', id: { _serialized: '621@c.us' } };
+    const chat = { fetchMessages: jest.fn().mockResolvedValue([groupMsg]) };
+    const client = {
+      getChatById: jest.fn().mockResolvedValue(chat),
+      getContactById: jest.fn().mockResolvedValue(participant),
+    };
+
+    const out = await readyAdapter(client).getChatHistory('120363000@g.us', 50, false);
+
+    // getContactById must be called with the author (participant) JID, not the group JID
+    expect(client.getContactById).toHaveBeenCalledWith('621@c.us');
+    expect(out[0].contact).toEqual({ name: 'Bob', pushName: 'Bobby' });
+    expect(out[0].author).toBe('621@c.us');
+  });
+
+  it('resolves LID sender phone via resolveContactPhone when contact.number is blank', async () => {
+    const lidMsg = {
+      id: { _serialized: 'LM1' },
+      from: '120363000@g.us',
+      to: 'me',
+      body: 'lid message',
+      type: 'chat',
+      timestamp: 400,
+      fromMe: false,
+      author: '120363342024925175@lid',
+      _data: { notifyName: 'LidUser' },
+      hasMedia: false,
+      hasQuotedMsg: false,
+    };
+    // LID contact has no phone number — getContactById returns id=@lid but number is blank
+    const lidContact = { name: undefined, pushname: 'LidUser', number: '', id: { _serialized: '120363342024925175@lid' } };
+    const chat = { fetchMessages: jest.fn().mockResolvedValue([lidMsg]) };
+    const resolveContactPhone = jest.fn().mockResolvedValue('85259510744');
+    const adapter = readyAdapter({
+      getChatById: jest.fn().mockResolvedValue(chat),
+      getContactById: jest.fn().mockResolvedValue(lidContact),
+    });
+    // resolveContactPhone is a private method; spy on it via the prototype
+    const resolveSpy = jest.spyOn(WhatsAppWebJsAdapter.prototype, 'resolveContactPhone').mockResolvedValue('+85259510744');
+
+    const out = await adapter.getChatHistory('120363000@g.us', 50, false);
+
+    expect(resolveSpy).toHaveBeenCalledWith('120363342024925175@lid');
+    expect(out[0].contact?.number).toBe('+85259510744');
+    expect(out[0].contact?.pushName).toBe('LidUser');
+    resolveSpy.mockRestore();
   });
 });
 
@@ -997,9 +1061,9 @@ describe('WhatsAppWebJsAdapter.resolveContactPhone (@lid -> phone, #263)', () =>
     return adapter;
   };
 
-  it('returns the phone JID stripped to MSISDN digits', async () => {
+  it('returns the phone JID stripped to MSISDN digits with + prefix', async () => {
     const adapter = readyAdapter(jest.fn().mockResolvedValue([{ lid: '123@lid', pn: '628123456789@c.us' }]));
-    await expect(adapter.resolveContactPhone('123@lid')).resolves.toBe('628123456789');
+    await expect(adapter.resolveContactPhone('123@lid')).resolves.toBe('+628123456789');
   });
 
   it('returns null when the engine has no mapping (empty result or empty pn)', async () => {
@@ -1232,6 +1296,7 @@ describe('WhatsAppWebJsAdapter inbound media (MEDIA_DOWNLOAD_ENABLED=false)', ()
       info: { wid: { user: '628123' }, pushname: 'Tester' },
       getState: jest.fn().mockResolvedValue(WAState.CONNECTED),
       pupPage: { evaluate: jest.fn().mockResolvedValue(true) },
+      getContactById: jest.fn().mockResolvedValue(null),
     });
     (adapter as unknown as { client: unknown }).client = client;
     const onMessage = jest.fn();
@@ -1248,7 +1313,6 @@ describe('WhatsAppWebJsAdapter inbound media (MEDIA_DOWNLOAD_ENABLED=false)', ()
       fromMe: false,
       hasMedia: true,
       _data: { mimetype: 'image/png', size: 5000 },
-      getContact: jest.fn().mockResolvedValue(null),
       hasQuotedMsg: false,
     };
 
@@ -1278,6 +1342,7 @@ describe('WhatsAppWebJsAdapter inbound media (MEDIA_DOWNLOAD_ENABLED=false)', ()
       info: { wid: { user: '628123' }, pushname: 'Tester' },
       getState: jest.fn().mockResolvedValue(WAState.CONNECTED),
       pupPage: { evaluate: jest.fn().mockResolvedValue(true) },
+      getContactById: jest.fn().mockResolvedValue(null),
     });
     (adapter as unknown as { client: unknown }).client = client;
     const onMessage = jest.fn();
@@ -1294,7 +1359,6 @@ describe('WhatsAppWebJsAdapter inbound media (MEDIA_DOWNLOAD_ENABLED=false)', ()
       fromMe: false,
       hasMedia: false,
       _data: { isVideoCall: true }, // no callDuration on an incoming call => missed
-      getContact: jest.fn().mockResolvedValue(null),
       hasQuotedMsg: false,
     };
 

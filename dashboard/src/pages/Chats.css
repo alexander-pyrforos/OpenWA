@@ -412,6 +412,17 @@
   white-space: pre-wrap;
 }
 
+.chats-page .message-sender-name{
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+  color: var(--primary, #25d366);
+}
+
+.chats-page .message-bubble-wrapper.incoming .message-sender-name{
+  color: var(--text-secondary, #8696a0);
+}
+
 .chats-page .message-meta{
   display: flex;
   align-items: center;

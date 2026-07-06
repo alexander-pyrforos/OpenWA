@@ -1927,8 +1927,8 @@ describe('BaileysAdapter contact + chat reads', () => {
       lidPnMappings: [{ lid: '111@lid', pn: '628999@s.whatsapp.net' }],
     });
     expect(await adapter.getContacts()).toHaveLength(1);
-    expect(await adapter.resolveContactPhone('111@lid')).toBe('628999');
-    expect(await adapter.resolveContactPhone('628222@s.whatsapp.net')).toBe('628222');
+    expect(await adapter.resolveContactPhone('111@lid')).toBe('+628999');
+    expect(await adapter.resolveContactPhone('628222@s.whatsapp.net')).toBe('+628222');
   });
 
   it('contact/chat reads reject with EngineNotReadyError before connect', async () => {

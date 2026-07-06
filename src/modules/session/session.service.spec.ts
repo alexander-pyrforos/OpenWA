@@ -89,7 +89,7 @@ describe('SessionService', () => {
       markUnread: jest.fn().mockResolvedValue(true),
       deleteChat: jest.fn().mockResolvedValue(true),
       sendChatState: jest.fn().mockResolvedValue(undefined),
-      resolveContactPhone: jest.fn().mockResolvedValue('628111222333'),
+      resolveContactPhone: jest.fn().mockResolvedValue('+628111222333'),
     };
 
     engineFactory = {
@@ -1384,7 +1384,7 @@ describe('SessionService', () => {
       process.env.RESOLVE_LID_TO_PHONE = 'true';
       try {
         echoHook();
-        mockEngine.resolveContactPhone.mockResolvedValue('628111222333');
+        mockEngine.resolveContactPhone.mockResolvedValue('+628111222333');
         const callbacks = await startAndCaptureCallbacks();
 
         callbacks.onMessage!(makeMessage({ from: '111@lid', chatId: '111@lid', isLidSender: true }));
@@ -1392,11 +1392,11 @@ describe('SessionService', () => {
 
         const received = dispatchedEvents('message.received');
         expect(received).toHaveLength(1);
-        expect((received[0][2] as IncomingMessage).senderPhone).toBe('628111222333');
+        expect((received[0][2] as IncomingMessage).senderPhone).toBe('+628111222333');
         expect(mockEngine.resolveContactPhone).toHaveBeenCalledWith('111@lid');
         // #583 R3 Phase 2: the resolved inbound @lid -> phone is persisted so the read-path can bridge
         // this contact's @lid and @c.us rows even if the operator never sent to them.
-        expect(lidMappingStore.remember).toHaveBeenCalledWith('111', '628111222333', expect.any(String));
+        expect(lidMappingStore.remember).toHaveBeenCalledWith('111', '+628111222333', expect.any(String));
       } finally {
         delete process.env.RESOLVE_LID_TO_PHONE;
       }
@@ -1411,7 +1411,10 @@ describe('SessionService', () => {
         echoHook();
         const store = new BaileysSessionStore();
         store.addLidMappings([{ lid: '111@lid', pn: '628111222333@s.whatsapp.net' }]);
-        mockEngine.resolveContactPhone.mockImplementation((id: string) => Promise.resolve(store.resolvePhone(id)));
+        mockEngine.resolveContactPhone.mockImplementation((id: string) => {
+          const digits = store.resolvePhone(id);
+          return Promise.resolve(digits ? `+${digits}` : null);
+        });
         const callbacks = await startAndCaptureCallbacks();
 
         // Group lid author resolved to <phone>@c.us by the engine boundary.
@@ -1422,7 +1425,7 @@ describe('SessionService', () => {
 
         const received = dispatchedEvents('message.received');
         expect(received).toHaveLength(1);
-        expect((received[0][2] as IncomingMessage).senderPhone).toBe('628111222333');
+        expect((received[0][2] as IncomingMessage).senderPhone).toBe('+628111222333');
         expect(mockEngine.resolveContactPhone).toHaveBeenCalledWith('628111222333@c.us');
       } finally {
         delete process.env.RESOLVE_LID_TO_PHONE;
@@ -1462,7 +1465,7 @@ describe('SessionService', () => {
       process.env.RESOLVE_LID_TO_PHONE = 'true';
       try {
         echoHook();
-        mockEngine.resolveContactPhone.mockResolvedValue('628111222333');
+        mockEngine.resolveContactPhone.mockResolvedValue('+628111222333');
         const callbacks = await startAndCaptureCallbacks();
 
         callbacks.onMessage!(makeMessage({ id: 'm1', from: '111@lid', chatId: '111@lid', isLidSender: true }));

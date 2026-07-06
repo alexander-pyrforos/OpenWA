@@ -458,7 +458,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     });
 
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
-    this.client.on('message', async msg => {
+     this.client.on('message', async msg => {
       try {
         const incomingMessage: IncomingMessage = buildIncomingMessageBase(msg);
 
@@ -466,13 +466,51 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         // in 1:1); we read only its synchronous fields and never the async getters (profile pic, about),
         // which would hit WhatsApp on every message.
         try {
-          const contact = await msg.getContact();
+          // For group messages, use the author field to get the actual sender's contact
+          // instead of the group contact
+          const contactId = incomingMessage.isGroup && incomingMessage.author 
+            ? incomingMessage.author 
+            : msg.from;
+          const contact = await this.client!.getContactById(contactId);
+          // DIAG: log the raw author/from and contact fields for group messages to diagnose
+          // why some senders still show a LID or group ID instead of a phone number.
+          if (incomingMessage.isGroup) {
+            this.logger.warn(
+              `[CONTACT-DIAG] from=${msg.from} author=${msg.author ?? '(none)'} contactId=${contactId}` +
+              ` contact.number=${contact?.number ?? '(null)'} contact.id=${contact?.id?._serialized ?? '(none)'}` +
+              ` contact.pushname=${contact?.pushname ?? '(none)'} isLidSender=${incomingMessage.isLidSender ?? false}`,
+            );
+          }
           if (contact) {
             // Off by default the payload keeps { name, pushName }; WEBHOOK_CONTACT_DETAILS opts into the
             // full set. Merge over the base so the notifyName pushName isn't lost, and skip an empty
             // result so we don't emit an empty contact object.
             const full = process.env.WEBHOOK_CONTACT_DETAILS === 'true';
             const merged = { ...incomingMessage.contact, ...mapContactFields(contact, full) };
+
+            // Fix LID sender phone numbers: when getContactById is called with a LID JID
+            // (e.g. "236129315995705@lid"), whatsapp-web.js returns contact.number = the LID digits
+            // ("236129315995705") instead of the real phone number, but contact.id._serialized
+            // contains the real phone JID ("8619002014395@c.us"). Replace the LID-number with the
+            // real phone extracted from the contact's serialized ID, or fall back to resolveContactPhone.
+            const contactJid = contact?.id?._serialized ?? '';
+            const isLidNumber = merged.number && contactId.endsWith('@lid') && merged.number === contactId.replace(/@lid$/, '');
+            if (isLidNumber && contactJid.endsWith('@c.us')) {
+              // Extract real phone from contact.id._serialized (e.g. "8619002014395@c.us" → "+8619002014395")
+              const realPhone = contactJid.replace(/@c\.us$/i, '');
+              if (realPhone && /^\d+$/.test(realPhone)) {
+                merged.number = `+${realPhone}`;
+              }
+            }
+            // Resolve phone for ANY contact where number is still missing/empty after LID fix.
+            if (!merged.number) {
+              try {
+                const phone = await this.resolveContactPhone(contactId);
+                if (phone) {
+                  merged.number = phone;
+                }
+              } catch { /* best-effort: never block dispatch on a resolution failure */ }
+            }
             if (Object.keys(merged).length > 0) {
               incomingMessage.contact = merged;
             }
@@ -1046,7 +1084,10 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       // the mapping; best-effort, so a missing mapping or any failure resolves to null.
       const [result] = await this.client!.getContactLidAndPhone([contactId]);
       const pn = result?.pn;
-      return pn ? pn.replace(/@c\.us$/i, '').replace(/\D/g, '') || null : null;
+      // Strip the JID suffix and any non-digit characters, then re-add the leading +
+      // so phone numbers are always in E.164 format (+85264440369, not 85264440369).
+      const digits = pn ? pn.replace(/@c\.us$/i, '').replace(/\D/g, '') : '';
+      return digits ? `+${digits}` : null;
     } catch (error) {
       this.logger.debug(`resolveContactPhone failed for ${contactId}`, {
         error: error instanceof Error ? error.message : String(error),
@@ -1586,6 +1627,41 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           this.logger.warn(`Failed to resolve quoted message for ${msg.id._serialized}: ${String(error)}`);
         }
       }
+      // Enrich sender contact info (same logic as the live message handler: for group messages
+      // use the author field to resolve the real participant's contact, not the group contact).
+        try {
+          const contactId = out.isGroup && out.author ? out.author : msg.from;
+          const contact = await this.client!.getContactById(contactId);
+          if (contact) {
+            const full = process.env.WEBHOOK_CONTACT_DETAILS === 'true';
+            const merged = { ...out.contact, ...mapContactFields(contact, full) };
+            // Fix LID sender phone numbers: contact.number may contain LID digits instead of the
+            // real phone when queried via a LID JID, but contact.id._serialized has the real phone.
+            const contactJid = contact?.id?._serialized ?? '';
+            const isLidNumber = merged.number && contactId.endsWith('@lid') && merged.number === contactId.replace(/@lid$/, '');
+            if (isLidNumber && contactJid.endsWith('@c.us')) {
+              const realPhone = contactJid.replace(/@c\.us$/i, '');
+              if (realPhone && /^\d+$/.test(realPhone)) {
+                merged.number = `+${realPhone}`;
+              }
+            }
+            // Resolve phone for ANY contact where number is still missing/empty (same as live handler).
+            if (!merged.number) {
+              try {
+                const phone = await this.resolveContactPhone(contactId);
+                if (phone) {
+                  merged.number = phone;
+                }
+              } catch { /* best-effort */ }
+            }
+            if (Object.keys(merged).length > 0) {
+              out.contact = merged;
+            }
+          }
+        } catch (error) {
+          this.logger.warn(`Failed to resolve contact for history message ${msg.id._serialized}: ${String(error)}`);
+        }
+
       if (includeMedia && msg.hasMedia) {
         try {
           // Same pre-gate + limiter as live media: a large historical blob shouldn't bloat the response/heap.

@@ -54,6 +54,10 @@ interface IncomingWsMessage {
   type: string;
   timestamp: number;
   fromMe?: boolean;
+  author?: string;
+  isGroup?: boolean;
+  contact?: { id?: string; number?: string; name?: string; pushName?: string; shortName?: string };
+  senderPhone?: string | null;
   media?: MessageMedia;
   quotedMessage?: { id: string; body: string };
   // The backend emits `call` as a top-level field on the live `message.received` event (it's only
@@ -220,6 +224,10 @@ export function Chats() {
         status: 'sent',
         timestamp: newMsg.timestamp,
         createdAt: new Date(newMsg.timestamp * 1000).toISOString(),
+        author: newMsg.author,
+        isGroup: newMsg.isGroup,
+        contact: newMsg.contact,
+        senderPhone: newMsg.senderPhone,
         metadata: newMsg.metadata || {
           media: newMsg.media,
           quotedMessage: newMsg.quotedMessage,
@@ -907,6 +915,19 @@ export function Chats() {
                       const isRevoked = msg.type === 'revoked';
                       const isMasked = msg.type === 'masked';
 
+                      // Resolve sender display name for incoming group messages.
+                      // For 1:1 chats the chat header already identifies the contact.
+                      // Priority: contact.name > contact.number (E.164 phone) > pushName > senderPhone > author/from
+                      const senderLabel =
+                        !isMe && (msg.isGroup || activeChat?.isGroup)
+                          ? msg.contact?.name ||
+                            msg.contact?.number ||
+                            msg.contact?.pushName ||
+                            msg.senderPhone ||
+                            msg.author?.split('@')[0] ||
+                            msg.from?.split('@')[0]
+                          : undefined;
+
                       return (
                         <div
                           key={msg.id}
@@ -914,11 +935,14 @@ export function Chats() {
                         >
                           <div className="message-bubble-container">
                             <div
-                              className={`message-bubble ${isMe ? 'outgoing' : 'incoming'} ${msg.status} ${
-                                isMediaMessage ? 'media-type' : ''
-                              } ${isRevoked ? 'revoked-type' : ''}`}
+                            className={`message-bubble ${isMe ? 'outgoing' : 'incoming'} ${msg.status} ${
+                              isMediaMessage ? 'media-type' : ''
+                            } ${isRevoked ? 'revoked-type' : ''}`}
                             >
-                              {/* Quoted message display */}
+                              {/* Sender name in group chats */}
+                              {senderLabel && (
+                                <div className="message-sender-name">{senderLabel}</div>
+                              )}
                               {msg.metadata?.quotedMessage && (
                                 <div className="message-quote-box">
                                   <MessageBody
