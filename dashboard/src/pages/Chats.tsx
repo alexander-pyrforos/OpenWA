@@ -915,18 +915,46 @@ export function Chats() {
                       const isRevoked = msg.type === 'revoked';
                       const isMasked = msg.type === 'masked';
 
-                      // Resolve sender display name for incoming group messages.
+                      // Resolve sender info for incoming group messages.
                       // For 1:1 chats the chat header already identifies the contact.
-                      // Priority: contact.name > contact.number (E.164 phone) > pushName > senderPhone > author/from
-                      const senderLabel =
-                        !isMe && (msg.isGroup || activeChat?.isGroup)
-                          ? msg.contact?.name ||
-                            msg.contact?.number ||
-                            msg.contact?.pushName ||
-                            msg.senderPhone ||
-                            msg.author?.split('@')[0] ||
-                            msg.from?.split('@')[0]
-                          : undefined;
+                      // Always show something: name · phone, or just phone, or LID/JID as last resort.
+                      const senderInfo = !isMe && (msg.isGroup || activeChat?.isGroup || msg.author)
+                        ? (() => {
+                            const c = msg.contact;
+                            const phone = msg.senderPhone || c?.number;
+                            const rawJid = msg.author || msg.from;
+                            const rawId = rawJid?.split('@')[0] ?? '';
+                            const jidSuffix = rawJid?.split('@')[1] ?? '';
+                            const pushName = c?.pushName;
+                            const name = c?.name;
+                            const isLid = jidSuffix === 'lid';
+                            const isGroupJid = jidSuffix === 'g.us';
+                            // Is phone a real phone number (not just the LID digits)?
+                            const realPhone = phone && phone.replace(/^\+/, '') !== rawId
+                              ? (phone.startsWith('+') ? phone : `+${phone}`)
+                              : null;
+                            const parts: string[] = [];
+                            // Push name is the WhatsApp display name — always useful and distinct from phone
+                            if (pushName) {
+                              parts.push(pushName);
+                            }
+                            // contact.name is often the phone number with + — skip if it matches realPhone
+                            if (name && name !== realPhone && name !== `+${rawId}` && name !== pushName) {
+                              parts.push(name);
+                            }
+                            if (realPhone) {
+                              parts.push(realPhone);
+                            } else if (isLid) {
+                              // LID sender whose phone couldn't be resolved — show LID tag
+                              parts.push(`LID:${rawId}`);
+                            } else if (!isGroupJid && rawId) {
+                              // @c.us sender — rawId IS the phone number
+                              parts.push(`+${rawId}`);
+                            }
+                            const result = parts.length > 0 ? parts.join(' · ') : undefined;
+                            return result;
+                          })()
+                        : undefined;
 
                       return (
                         <div
@@ -939,9 +967,9 @@ export function Chats() {
                               isMediaMessage ? 'media-type' : ''
                             } ${isRevoked ? 'revoked-type' : ''}`}
                             >
-                              {/* Sender name in group chats */}
-                              {senderLabel && (
-                                <div className="message-sender-name">{senderLabel}</div>
+                              {/* Sender info in group chats */}
+                              {senderInfo && (
+                                <div className="message-sender-name">{senderInfo}</div>
                               )}
                               {msg.metadata?.quotedMessage && (
                                 <div className="message-quote-box">

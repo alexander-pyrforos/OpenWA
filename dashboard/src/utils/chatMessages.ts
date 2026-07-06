@@ -42,10 +42,31 @@ const msgTime = (m: ChatMessage): number =>
 // Merge persisted DB messages with engine history into one ascending thread. The engine fills the
 // backfill (history from before the gateway captured anything); the DB copy wins on conflict so the
 // real delivery status survives. Deduped by the wweb.js serialized id (engine `id` == DB `waMessageId`).
+//
+// DB rows are authoritative for `status` but lack group-sender fields (`author`, `contact`, `isGroup`,
+// `senderPhone`). When a DB row overwrites an engine-history row, we must merge: DB fields take
+// priority, but any sender fields missing from the DB row are backfilled from the engine copy.
 export function mergeChatMessages(db: ChatMessage[], history: ChatMessage[]): ChatMessage[] {
   const byId = new Map<string, ChatMessage>();
   for (const m of history) byId.set(msgKey(m), m);
-  for (const m of db) byId.set(msgKey(m), m); // DB overwrites the engine copy (authoritative status)
+  for (const m of db) {
+    const key = msgKey(m);
+    const existing = byId.get(key);
+    if (existing) {
+      // Merge: DB wins for its fields, but keep engine-only fields that DB doesn't have
+      byId.set(key, {
+        ...existing,   // start with engine copy (has author, contact, isGroup, senderPhone)
+        ...m,           // DB overwrites (status, body, type, etc.)
+        // Preserve engine-only sender fields if DB row is missing them
+        author: m.author ?? existing.author,
+        contact: m.contact ?? existing.contact,
+        isGroup: m.isGroup ?? existing.isGroup,
+        senderPhone: m.senderPhone ?? existing.senderPhone,
+      });
+    } else {
+      byId.set(key, m);
+    }
+  }
   return [...byId.values()].sort((a, b) => msgTime(a) - msgTime(b) || a.createdAt.localeCompare(b.createdAt));
 }
 

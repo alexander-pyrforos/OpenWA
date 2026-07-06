@@ -472,15 +472,6 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
             ? incomingMessage.author 
             : msg.from;
           const contact = await this.client!.getContactById(contactId);
-          // DIAG: log the raw author/from and contact fields for group messages to diagnose
-          // why some senders still show a LID or group ID instead of a phone number.
-          if (incomingMessage.isGroup) {
-            this.logger.warn(
-              `[CONTACT-DIAG] from=${msg.from} author=${msg.author ?? '(none)'} contactId=${contactId}` +
-              ` contact.number=${contact?.number ?? '(null)'} contact.id=${contact?.id?._serialized ?? '(none)'}` +
-              ` contact.pushname=${contact?.pushname ?? '(none)'} isLidSender=${incomingMessage.isLidSender ?? false}`,
-            );
-          }
           if (contact) {
             // Off by default the payload keeps { name, pushName }; WEBHOOK_CONTACT_DETAILS opts into the
             // full set. Merge over the base so the notifyName pushName isn't lost, and skip an empty

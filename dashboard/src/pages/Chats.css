@@ -417,6 +417,7 @@
   font-weight: 600;
   margin-bottom: 0.2rem;
   color: var(--primary, #25d366);
+  word-break: break-word;
 }
 
 .chats-page .message-bubble-wrapper.incoming .message-sender-name{
