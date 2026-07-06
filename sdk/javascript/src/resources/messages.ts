@@ -21,6 +21,24 @@ import type {
   ReactionRecord,
   ReactMessageRequest,
   ReplyMessageRequest,
+  SearchQuery,
+  SearchResult,
+  SendBulkRequest,
+  SendContactRequest,
+  SendLocationRequest,
+  SendMediaRequest,
+  SendPollRequest,
+  SendTemplateRequest,
+  SendTextRequest,
+  SuccessResult,
+  ForwardMessageRequest,
+  ListMessagesQuery,
+  MessageHistoryQuery,
+  MessageListResponse,
+  MessageResponse,
+  ReactionRecord,
+  ReactMessageRequest,
+  ReplyMessageRequest,
   SendBulkRequest,
   SendContactRequest,
   SendLocationRequest,
@@ -181,6 +199,42 @@ export class MessagesResource {
     return this.client.request<BatchStatusResponse>({
       method: 'POST',
       path: `/api/sessions/${encodeSegment(sessionId)}/messages/batch/${encodeSegment(batchId)}/cancel`,
+    });
+  }
+}
+
+/**
+ * Global search resource — search messages across all sessions.
+ * Requires Meilisearch to be configured (MEILISEARCH_URL env var).
+ * The search endpoint lives at `/api/messages/search`, not under `/sessions/:id/messages`.
+ */
+export class SearchResource {
+  constructor(private readonly client: OpenWAClient) {}
+
+  /** Search messages across all sessions. Requires Meilisearch. */
+  search(query: SearchQuery): Promise<SearchResult> {
+    const params: Record<string, string | number | boolean> = { q: query.q };
+    if (query.sessionId) params.sessionId = query.sessionId;
+    if (query.chatId) params.chatId = query.chatId;
+    if (query.from) params.from = query.from;
+    if (query.type) params.type = query.type;
+    if (query.direction) params.direction = query.direction;
+    if (query.hasMedia !== undefined) params.hasMedia = query.hasMedia;
+    if (query.limit !== undefined) params.limit = query.limit;
+    if (query.offset !== undefined) params.offset = query.offset;
+
+    return this.client.request<SearchResult>({
+      method: 'GET',
+      path: '/api/messages/search',
+      query: params,
+    });
+  }
+
+  /** Reindex all messages into Meilisearch. Requires ADMIN key. */
+  reindex(): Promise<{ indexed: number }> {
+    return this.client.request<{ indexed: number }>({
+      method: 'POST',
+      path: '/api/messages/search/reindex',
     });
   }
 }

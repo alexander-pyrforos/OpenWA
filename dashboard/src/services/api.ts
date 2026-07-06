@@ -618,6 +618,65 @@ export const messageApi = {
 };
 
 // =============================================================================
+// Search API
+// =============================================================================
+
+export interface SearchHit {
+  id: string;
+  sessionId: string;
+  waMessageId: string | null;
+  chatId: string;
+  chatName: string | null;
+  from: string;
+  to: string;
+  body: string | null;
+  type: string;
+  direction: string;
+  status: string;
+  hasMedia: boolean;
+  timestamp: number | null;
+  createdAt: string;
+  _formatted?: { body?: string };
+}
+
+export interface SearchResult {
+  hits: SearchHit[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface SearchParams {
+  q: string;
+  sessionId?: string;
+  chatId?: string;
+  from?: string;
+  type?: string;
+  direction?: string;
+  hasMedia?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export const searchApi = {
+  search: (params: SearchParams) => {
+    const query = new URLSearchParams();
+    query.set('q', params.q);
+    if (params.sessionId) query.set('sessionId', params.sessionId);
+    if (params.chatId) query.set('chatId', params.chatId);
+    if (params.from) query.set('from', params.from);
+    if (params.type) query.set('type', params.type);
+    if (params.direction) query.set('direction', params.direction);
+    if (params.hasMedia !== undefined) query.set('hasMedia', String(params.hasMedia));
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.offset !== undefined) query.set('offset', String(params.offset));
+    return request<SearchResult>(`/messages/search?${query.toString()}`);
+  },
+  reindex: () =>
+    request<{ indexed: number }>('/messages/search/reindex', { method: 'POST' }),
+};
+
+// =============================================================================
 // Health & Infrastructure API
 // =============================================================================
 

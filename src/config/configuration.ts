@@ -142,6 +142,13 @@ export default () => ({
     })(),
   },
 
+  // Meilisearch configuration (optional — global message search)
+  meilisearch: {
+    url: process.env.MEILISEARCH_URL || undefined,
+    apiKey: process.env.MEILISEARCH_API_KEY || undefined,
+    indexPrefix: process.env.MEILISEARCH_INDEX_PREFIX || 'openwa_',
+  },
+
   // Storage configuration
   storage: {
     type: process.env.STORAGE_TYPE || 'local',

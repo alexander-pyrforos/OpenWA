@@ -34,6 +34,7 @@ import { PluginsModule } from './core/plugins';
 import { PluginsApiModule } from './modules/plugins/plugins.module';
 import { AgentToolsModule } from './core/agent-tools/agent-tools.module';
 import { IntegrationModule } from './modules/integration/integration.module';
+import { SearchModule } from './modules/search/search.module';
 
 // Only import QueueModule if explicitly enabled to avoid Redis connection errors
 const queueModules: Array<Type | DynamicModule> = [];
@@ -244,6 +245,7 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
     PluginsApiModule, // Phase 5: Plugins API
     AgentToolsModule, // Agent-invocable tool registry (protocol-neutral)
     IntegrationModule, // Integration Fabric: @Public provider-webhook ingress + fast-ack pipeline
+    SearchModule, // Meilisearch-powered global message search (opt-in via MEILISEARCH_URL)
     ...mcpModules, // MCP Streamable-HTTP server (opt-in via MCP_ENABLED=true)
     ...serveStaticModules, // Bundled dashboard SPA (production single-port setup)
   ],

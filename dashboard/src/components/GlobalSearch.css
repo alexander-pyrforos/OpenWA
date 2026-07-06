@@ -1,0 +1,295 @@
+/*
+ * Global message search panel.
+ * Token usage and visual character mirror the appearance-menu-list pattern
+ * (Layout.css): --bg-white surfaces, --border hairlines, --primary / --primary-soft
+ * accents, 12px / 8px radii, and a soft slate elevation shadow.
+ */
+
+.global-search {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ── Input bar ─────────────────────────────────────────────────────── */
+
+.global-search-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-white, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  color: var(--text-muted, #94a3b8);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.global-search-input:focus-within {
+  border-color: var(--primary, #25d366);
+  box-shadow: 0 0 0 3px var(--primary-soft, rgba(37, 211, 102, 0.12));
+}
+
+.global-search-input input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 0.8125rem;
+  outline: none;
+  color: var(--text-primary, #0f172a);
+}
+
+.global-search-input input::placeholder {
+  color: var(--text-muted, #94a3b8);
+}
+
+.global-search-clear,
+.global-search-filter-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted, #94a3b8);
+  padding: 0.25rem;
+  border-radius: 6px;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.global-search-clear:hover,
+.global-search-filter-btn:hover {
+  color: var(--text-primary, #0f172a);
+  background: var(--bg-light, #f8fafc);
+}
+
+.global-search-filter-btn.active {
+  color: var(--primary, #25d366);
+  background: var(--primary-soft, rgba(37, 211, 102, 0.12));
+}
+
+/* ── Filters row ───────────────────────────────────────────────────── */
+
+.global-search-filters {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.5rem;
+  background: var(--bg-white, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+
+.global-search-filters select {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  background: var(--bg-light, #f8fafc);
+  color: var(--text-primary, #0f172a);
+  outline: none;
+}
+
+.global-search-filters select:focus-visible {
+  border-color: var(--primary, #25d366);
+  box-shadow: 0 0 0 3px var(--primary-soft, rgba(37, 211, 102, 0.12));
+}
+
+.global-search-media-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary, #475569);
+  cursor: pointer;
+  user-select: none;
+}
+
+.global-search-media-filter input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--primary, #25d366);
+}
+
+/* ── Results list ──────────────────────────────────────────────────── */
+
+.global-search-results {
+  max-height: 420px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  /* Subtle inner surface so the list reads as one grouped panel. */
+  background: var(--bg-light, #f8fafc);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 12px;
+}
+
+.global-search-loading,
+.global-search-no-results {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  color: var(--text-muted, #94a3b8);
+  font-size: 0.8125rem;
+}
+
+.global-search-loading {
+  color: var(--text-secondary, #475569);
+}
+
+.global-search-error {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--error, #dc2626);
+  text-align: center;
+}
+
+/* Each result is a real <button> (keyboard reachable). */
+.global-search-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--bg-white, #fff);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.global-search-result:hover {
+  border-color: var(--border, #e2e8f0);
+  background: var(--bg-white, #fff);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.global-search-result:focus-visible {
+  outline: none;
+  border-color: var(--primary, #25d366);
+  box-shadow: 0 0 0 3px var(--primary-soft, rgba(37, 211, 102, 0.12));
+}
+
+.global-search-result:active {
+  transform: translateY(0);
+}
+
+.global-search-result-icon {
+  flex-shrink: 0;
+  color: var(--text-muted, #94a3b8);
+  margin-top: 2px;
+}
+
+.global-search-result-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.global-search-result-body {
+  font-size: 0.8125rem;
+  color: var(--text-primary, #0f172a);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.global-search-result-body mark {
+  background: var(--primary-soft, rgba(37, 211, 102, 0.12));
+  color: var(--primary, #25d366);
+  padding: 0 1px;
+  border-radius: 2px;
+  font-weight: 600;
+}
+
+.global-search-result-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  color: var(--text-muted, #94a3b8);
+  margin-top: 2px;
+}
+
+.global-search-result-chat {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+  font-weight: 600;
+  color: var(--text-secondary, #475569);
+}
+
+.global-search-result-time {
+  flex-shrink: 0;
+}
+
+.global-search-result-direction {
+  font-weight: 700;
+  font-size: 0.625rem;
+}
+
+.global-search-result-direction.incoming {
+  color: var(--primary, #25d366);
+}
+
+.global-search-result-direction.outgoing {
+  color: var(--success, #22c55e);
+}
+
+/* "Open in chat" affordance — revealed on hover/focus to signal clickability. */
+.global-search-result-open {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--text-muted, #94a3b8);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.global-search-result:hover .global-search-result-open,
+.global-search-result:focus-visible .global-search-result-open {
+  opacity: 1;
+  color: var(--primary, #25d366);
+}
+
+.global-search-more {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted, #94a3b8);
+  padding: 0.5rem 0 0.25rem;
+}
+
+/* ── Unavailable state ─────────────────────────────────────────────── */
+
+.global-search-unavailable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1.25rem 0.75rem;
+  text-align: center;
+  color: var(--text-muted, #94a3b8);
+  font-size: 0.8125rem;
+}
+
+.global-search-unavailable p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+@media (max-width: 768px) {
+  .global-search-filters {
+    flex-direction: column;
+    gap: 0.375rem;
+    align-items: stretch;
+  }
+}

@@ -39,6 +39,19 @@ export function validateEnv(config: EnvConfig): EnvConfig {
   checkEnum('ENGINE_TYPE', ['whatsapp-web.js', 'baileys']);
   checkEnum('STORAGE_TYPE', ['local', 's3']);
 
+  // Meilisearch URL, when provided, must be a valid URL
+  const meiliUrl = str('MEILISEARCH_URL');
+  if (meiliUrl) {
+    try {
+      const parsed = new URL(meiliUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        errors.push(`MEILISEARCH_URL must be an HTTP or HTTPS URL (got "${meiliUrl}")`);
+      }
+    } catch {
+      errors.push(`MEILISEARCH_URL must be a valid URL (got "${meiliUrl}")`);
+    }
+  }
+
   if (dbType === 'postgres') {
     for (const key of ['DATABASE_HOST', 'DATABASE_USERNAME', 'DATABASE_PASSWORD']) {
       if (!str(key)) {

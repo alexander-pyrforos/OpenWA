@@ -10,6 +10,7 @@ import { TemplateService } from '../template/template.service';
 import { Template } from '../template/entities/template.entity';
 import { SsrfBlockedError } from '../../common/security/ssrf-guard';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
+import { SearchService } from '../search/search.service';
 
 const mockEngineResult = { id: 'wa-msg-1', timestamp: 1706868000 };
 
@@ -82,6 +83,14 @@ describe('MessageService', () => {
 
     lidMappingStore = { lidsForPhone: jest.fn().mockReturnValue([]) };
 
+    const searchService: jest.Mocked<Partial<SearchService>> = {
+      isAvailable: jest.fn().mockReturnValue(false),
+      indexMessage: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      search: jest.fn(),
+      reindexAll: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MessageService,
@@ -90,6 +99,7 @@ describe('MessageService', () => {
         { provide: HookManager, useValue: hookManager },
         { provide: TemplateService, useValue: templateService },
         { provide: LidMappingStoreService, useValue: lidMappingStore },
+        { provide: SearchService, useValue: searchService },
       ],
     }).compile();
 

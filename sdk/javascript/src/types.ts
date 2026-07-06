@@ -691,3 +691,51 @@ export interface SendCatalogRequest {
   /** Optional body/caption text. */
   body?: string;
 }
+
+// ── Global Search ────────────────────────────────────────────────
+
+export interface SearchQuery {
+  /** Search query text. */
+  q: string;
+  /** Filter by session ID. */
+  sessionId?: string;
+  /** Filter by chat ID. */
+  chatId?: string;
+  /** Filter by sender. */
+  from?: string;
+  /** Filter by message type. */
+  type?: 'text' | 'image' | 'video' | 'audio' | 'voice' | 'document' | 'sticker' | 'location' | 'contact' | 'poll' | 'call' | 'revoked' | 'forward' | 'unknown';
+  /** Filter by direction. */
+  direction?: 'incoming' | 'outgoing';
+  /** Filter: only messages with media. */
+  hasMedia?: boolean;
+  /** Results per page (max 100, default 20). */
+  limit?: number;
+  /** Pagination offset (default 0). */
+  offset?: number;
+}
+
+export interface SearchHit {
+  id: string;
+  sessionId: string;
+  waMessageId: string | null;
+  chatId: string;
+  chatName: string | null;
+  from: string;
+  to: string;
+  body: string | null;
+  type: string;
+  direction: string;
+  status: string;
+  hasMedia: boolean;
+  timestamp: number | null;
+  createdAt: string;
+  _formatted?: { body?: string };
+}
+
+export interface SearchResult {
+  hits: SearchHit[];
+  total: number;
+  limit: number;
+  offset: number;
+}

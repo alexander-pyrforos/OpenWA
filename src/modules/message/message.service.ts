@@ -14,6 +14,7 @@ import { createLogger } from '../../common/services/logger.service';
 import { SsrfBlockedError, SSRF_BLOCKED_CLIENT_MESSAGE } from '../../common/security/ssrf-guard';
 import { userPart } from '../../engine/identity/wa-id';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
+import { SearchService } from '../search/search.service';
 
 export interface GetMessagesOptions {
   chatId?: string;
@@ -34,6 +35,7 @@ export class MessageService {
     private readonly hookManager: HookManager,
     private readonly templateService: TemplateService,
     private readonly lidMappingStore: LidMappingStoreService,
+    private readonly searchService: SearchService,
   ) {}
 
   async sendText(sessionId: string, dto: SendTextMessageDto): Promise<MessageResponseDto> {
@@ -444,7 +446,9 @@ export class MessageService {
       sessionId,
       direction: MessageDirection.INCOMING,
     });
-    return this.messageRepository.save(message);
+    const saved = await this.messageRepository.save(message);
+    this.searchService.indexMessage(saved).catch(() => {}); // fire-and-forget
+    return saved;
   }
 
   /**
@@ -478,7 +482,9 @@ export class MessageService {
       status: data.status ?? MessageStatus.PENDING,
       metadata: data.metadata,
     });
-    return this.messageRepository.save(message);
+    const saved = await this.messageRepository.save(message);
+    this.searchService.indexMessage(saved).catch(() => {}); // fire-and-forget
+    return saved;
   }
 
   /**
@@ -493,6 +499,7 @@ export class MessageService {
     }
     message.status = MessageStatus.FAILED;
     await this.messageRepository.save(message);
+    this.searchService.indexMessage(message).catch(() => {}); // fire-and-forget
   }
 
   /**
@@ -514,6 +521,7 @@ export class MessageService {
         error: persistError instanceof Error ? persistError.message : String(persistError),
       });
     }
+    this.searchService.indexMessage(message).catch(() => {}); // fire-and-forget
     return { messageId: result.id, timestamp: result.timestamp };
   }
 
@@ -564,7 +572,15 @@ export class MessageService {
     // Flag the stored message as revoked. No localized display string is persisted here;
     // the dashboard renders the localized "message deleted" text.
     try {
-      await this.messageRepository.update({ sessionId, waMessageId: dto.messageId }, { body: '', type: 'revoked' });
+      const result = await this.messageRepository.update({ sessionId, waMessageId: dto.messageId }, { body: '', type: 'revoked' });
+      // Update the search index: find the revoked message and re-index it (body cleared, type=revoked).
+      // The update returns affected rows; find the message to get its UUID for Meilisearch.
+      if (result.affected && result.affected > 0) {
+        const revokedMessage = await this.messageRepository.findOne({ where: { sessionId, waMessageId: dto.messageId } });
+        if (revokedMessage) {
+          this.searchService.indexMessage(revokedMessage).catch(() => {}); // fire-and-forget
+        }
+      }
     } catch (err) {
       this.logger.warn(`Failed to flag deleted message ${dto.messageId} as revoked`, { error: String(err) });
     }

@@ -38,6 +38,7 @@ import {
 import { useChatScrollPosition } from '../hooks/useChatScrollPosition';
 import MessageBody from '../components/chats/MessageBody';
 import MediaLightbox, { type LightboxItem } from '../components/chats/MediaLightbox';
+import { GlobalSearch } from '../components/GlobalSearch';
 import './Chats.css';
 
 type MessageMedia = { mimetype: string; filename?: string; data?: string; omitted?: boolean; sizeBytes?: number };
@@ -98,6 +99,7 @@ export function Chats() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [loadingChats, setLoadingChats] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchMode, setSearchMode] = useState<'chats' | 'messages'>('chats');
 
   // Selected chat & message history
   const [activeChat, setActiveChat] = useState<Chat | null>(null);
@@ -127,6 +129,17 @@ export function Chats() {
   // References
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [replyingTo, setReplyingTo] = useState<ChatMessageView | null>(null);
+
+  // Pending "jump to message" navigation triggered by a global-search result click. The resolver
+  // effect below walks the three async stages — session switch → chat activation → message render —
+  // then scrolls the target message into view with a brief highlight. Cleared once it lands (or if
+  // the message can't be found in the loaded thread).
+  const [pendingNav, setPendingNav] = useState<{
+    sessionId: string;
+    chatId: string;
+    msgId: string;
+    waMessageId: string | null;
+  } | null>(null);
 
   // Per-chat scroll-position memory + auto-scroll heuristic.
   // Pass `messages.length > 0` as the loaded signal: it stays stable once the
@@ -458,6 +471,85 @@ export function Chats() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChat?.id, markChatRead]);
 
+  // Resolve a pending "jump to message" navigation from a global-search result. Walks three async
+  // stages — switch session → activate chat → wait for the thread to render — then scrolls the
+  // target bubble into view and flashes it. Each stage re-runs this effect when its state updates.
+  useEffect(() => {
+    if (!pendingNav) return;
+
+    // Stage 1: select the hit's session. Switching reloads the chats list + resets activeChat, so
+    // we bail and let the effect re-run when selectedSessionId lands.
+    if (pendingNav.sessionId !== selectedSessionId) {
+      if (sessions.some(s => s.id === pendingNav.sessionId)) {
+        setSelectedSessionId(pendingNav.sessionId);
+      } else {
+        showErrorToast(t('chats.search.chatNotFound', 'Chat not found in available sessions'));
+        setPendingNav(null);
+      }
+      return;
+    }
+
+    // Stage 2: activate the hit's chat. If it's missing from the sidebar (e.g. no recent activity),
+    // synthesize a minimal Chat from the hit so the thread can still open and load its history.
+    if (!activeChat || activeChat.id !== pendingNav.chatId) {
+      const chatMatch = chats.find(c => c.id === pendingNav.chatId);
+      if (chatMatch) {
+        setActiveChat(chatMatch);
+      } else if (!loadingChats) {
+        setActiveChat({
+          id: pendingNav.chatId,
+          name: pendingNav.chatId.split('@')[0],
+          isGroup: pendingNav.chatId.endsWith('g.us'),
+          unreadCount: 0,
+          timestamp: 0,
+        });
+      }
+      return; // wait for the thread to load + render
+    }
+
+    // Stage 3: the right chat is open — locate the target bubble and scroll it into view.
+    if (loadingMessages) return; // thread fetch still in flight
+    const container = messagesContainerRef.current;
+    if (!container) {
+      setPendingNav(null);
+      return;
+    }
+
+    const msgIdSel = `[data-msg-id="${CSS.escape(pendingNav.msgId)}"]`;
+    const waIdSel =
+      pendingNav.waMessageId && pendingNav.waMessageId !== pendingNav.msgId
+        ? `[data-msg-wa-id="${CSS.escape(pendingNav.waMessageId)}"]`
+        : '';
+    const target = container.querySelector<HTMLElement>(waIdSel ? `${msgIdSel}, ${waIdSel}` : msgIdSel);
+
+    if (!target) {
+      // Indexed in Meilisearch but outside the loaded history window — tell the user instead of
+      // silently doing nothing.
+      showWarningToast(t('chats.search.messageNotLoaded', 'Message not in the loaded history'));
+      setPendingNav(null);
+      return;
+    }
+
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    target.classList.add('search-highlight');
+    // No cleanup: the timer must fire even after pendingNav is cleared (which re-runs this effect
+    // with null and would otherwise cancel a returned cleanup before the class is removed).
+    window.setTimeout(() => target.classList.remove('search-highlight'), 2400);
+    setPendingNav(null);
+  }, [
+    pendingNav,
+    selectedSessionId,
+    sessions,
+    chats,
+    activeChat,
+    loadingChats,
+    loadingMessages,
+    messagesContainerRef,
+    showErrorToast,
+    showWarningToast,
+    t,
+  ]);
+
   // 5. Handle file selection & base64 conversion
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -715,16 +807,47 @@ export function Chats() {
                 </select>
               </div>
 
-              {/* Search bar */}
-              <div className="chat-search-input">
-                <Search size={18} />
-                <input
-                  type="text"
-                  placeholder={t('chats.searchPlaceholder')}
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                />
+              {/* Search mode toggle & bar */}
+              <div className="chat-search-tabs">
+                <button
+                  className={`chat-search-tab ${searchMode === 'chats' ? 'active' : ''}`}
+                  onClick={() => setSearchMode('chats')}
+                >
+                  {t('chats.searchModeChats', 'Chats')}
+                </button>
+                <button
+                  className={`chat-search-tab ${searchMode === 'messages' ? 'active' : ''}`}
+                  onClick={() => setSearchMode('messages')}
+                >
+                  {t('chats.searchModeMessages', 'Messages')}
+                </button>
               </div>
+              {searchMode === 'chats' ? (
+                <div className="chat-search-input">
+                  <Search size={18} />
+                  <input
+                    type="text"
+                    placeholder={t('chats.searchPlaceholder')}
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                  />
+                </div>
+              ) : (
+                <GlobalSearch
+                  sessionId={selectedSessionId || undefined}
+                  onResultClick={hit => {
+                    // Queue a "jump to message" navigation: switch to the hit's session + chat, then
+                    // scroll the specific message into view. The resolver effect handles the async
+                    // stages (session switch → chat activation → thread render).
+                    setPendingNav({
+                      sessionId: hit.sessionId,
+                      chatId: hit.chatId,
+                      msgId: hit.id,
+                      waMessageId: hit.waMessageId,
+                    });
+                  }}
+                />
+              )}
             </div>
 
             {/* Chat list */}
@@ -960,6 +1083,8 @@ export function Chats() {
                         <div
                           key={msg.id}
                           className={`message-bubble-wrapper ${isMe ? 'outgoing' : 'incoming'}`}
+                          data-msg-id={msg.id}
+                          data-msg-wa-id={msg.waMessageId ?? ''}
                         >
                           <div className="message-bubble-container">
                             <div
