@@ -73,6 +73,7 @@
     "dockerode": "^5.0.1",
     "helmet": "^8.2.0",
     "ioredis": "^5.11.1",
+    "meilisearch": "^0.59.0",
     "pg": "^8.22.0",
     "qrcode": "^1.5.4",
     "reflect-metadata": "^0.2.2",
@@ -141,7 +142,8 @@
     },
     "moduleNameMapper": {
       "^@whiskeysockets/baileys$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts",
-      "^@whiskeysockets/baileys/(.*)$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts"
+      "^@whiskeysockets/baileys/(.*)$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts",
+      "^meilisearch$": "<rootDir>/../test/__mocks__/meilisearch.ts"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"

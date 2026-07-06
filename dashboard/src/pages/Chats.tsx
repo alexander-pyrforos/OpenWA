@@ -822,7 +822,7 @@ export function Chats() {
                   {t('chats.searchModeMessages', 'Messages')}
                 </button>
               </div>
-              {searchMode === 'chats' ? (
+              {searchMode === 'chats' && (
                 <div className="chat-search-input">
                   <Search size={18} />
                   <input
@@ -832,25 +832,13 @@ export function Chats() {
                     onChange={e => setSearchQuery(e.target.value)}
                   />
                 </div>
-              ) : (
-                <GlobalSearch
-                  sessionId={selectedSessionId || undefined}
-                  onResultClick={hit => {
-                    // Queue a "jump to message" navigation: switch to the hit's session + chat, then
-                    // scroll the specific message into view. The resolver effect handles the async
-                    // stages (session switch → chat activation → thread render).
-                    setPendingNav({
-                      sessionId: hit.sessionId,
-                      chatId: hit.chatId,
-                      msgId: hit.id,
-                      waMessageId: hit.waMessageId,
-                    });
-                  }}
-                />
               )}
             </div>
 
-            {/* Chat list */}
+            {/* Chat list (chats mode) OR global message search results (messages mode).
+                GlobalSearch is rendered as a flex:1 sibling of the header box so its results scroll
+                in the same region .chats-list occupies, not crammed into the header. */}
+            {searchMode === 'chats' ? (
             <div className="chats-list">
               {loadingChats ? (
                 <div className="chats-list-loading">
@@ -899,6 +887,22 @@ export function Chats() {
                 })
               )}
             </div>
+            ) : (
+              <GlobalSearch
+                sessionId={selectedSessionId || undefined}
+                onResultClick={hit => {
+                  // Queue a "jump to message" navigation: switch to the hit's session + chat, then
+                  // scroll the specific message into view. The resolver effect handles the async
+                  // stages (session switch → chat activation → thread render).
+                  setPendingNav({
+                    sessionId: hit.sessionId,
+                    chatId: hit.chatId,
+                    msgId: hit.id,
+                    waMessageId: hit.waMessageId,
+                  });
+                }}
+              />
+            )}
           </aside>
 
           {/* RIGHT VIEW: active chat room */}
