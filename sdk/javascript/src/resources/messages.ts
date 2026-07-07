@@ -31,21 +31,6 @@ import type {
   SendTemplateRequest,
   SendTextRequest,
   SuccessResult,
-  ForwardMessageRequest,
-  ListMessagesQuery,
-  MessageHistoryQuery,
-  MessageListResponse,
-  MessageResponse,
-  ReactionRecord,
-  ReactMessageRequest,
-  ReplyMessageRequest,
-  SendBulkRequest,
-  SendContactRequest,
-  SendLocationRequest,
-  SendMediaRequest,
-  SendTemplateRequest,
-  SendTextRequest,
-  SuccessResult,
 } from '../types.js';
 
 export class MessagesResource {
