@@ -14,7 +14,7 @@ import { createLogger } from '../../common/services/logger.service';
 import { SsrfBlockedError, SSRF_BLOCKED_CLIENT_MESSAGE } from '../../common/security/ssrf-guard';
 import { userPart } from '../../engine/identity/wa-id';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
-import { SearchService } from '../search/search.service';
+import { toMessagePersistedPayload } from './message-payload.util';
 
 export interface GetMessagesOptions {
   chatId?: string;
@@ -35,7 +35,6 @@ export class MessageService {
     private readonly hookManager: HookManager,
     private readonly templateService: TemplateService,
     private readonly lidMappingStore: LidMappingStoreService,
-    private readonly searchService: SearchService,
   ) {}
 
   async sendText(sessionId: string, dto: SendTextMessageDto): Promise<MessageResponseDto> {
@@ -447,7 +446,9 @@ export class MessageService {
       direction: MessageDirection.INCOMING,
     });
     const saved = await this.messageRepository.save(message);
-    this.searchService.indexMessage(saved).catch(() => {}); // fire-and-forget
+    void this.hookManager
+      .execute('message:persisted', toMessagePersistedPayload(saved), { sessionId, source: 'MessageService' })
+      .catch(() => {});
     return saved;
   }
 
@@ -483,7 +484,9 @@ export class MessageService {
       metadata: data.metadata,
     });
     const saved = await this.messageRepository.save(message);
-    this.searchService.indexMessage(saved).catch(() => {}); // fire-and-forget
+    void this.hookManager
+      .execute('message:persisted', toMessagePersistedPayload(saved), { sessionId, source: 'MessageService' })
+      .catch(() => {});
     return saved;
   }
 
@@ -499,7 +502,12 @@ export class MessageService {
     }
     message.status = MessageStatus.FAILED;
     await this.messageRepository.save(message);
-    this.searchService.indexMessage(message).catch(() => {}); // fire-and-forget
+    void this.hookManager
+      .execute('message:persisted', toMessagePersistedPayload(message), {
+        sessionId: message.sessionId,
+        source: 'MessageService',
+      })
+      .catch(() => {});
   }
 
   /**
@@ -521,7 +529,12 @@ export class MessageService {
         error: persistError instanceof Error ? persistError.message : String(persistError),
       });
     }
-    this.searchService.indexMessage(message).catch(() => {}); // fire-and-forget
+    void this.hookManager
+      .execute('message:persisted', toMessagePersistedPayload(message), {
+        sessionId: message.sessionId,
+        source: 'MessageService',
+      })
+      .catch(() => {});
     return { messageId: result.id, timestamp: result.timestamp };
   }
 
@@ -578,7 +591,12 @@ export class MessageService {
       if (result.affected && result.affected > 0) {
         const revokedMessage = await this.messageRepository.findOne({ where: { sessionId, waMessageId: dto.messageId } });
         if (revokedMessage) {
-          this.searchService.indexMessage(revokedMessage).catch(() => {}); // fire-and-forget
+          void this.hookManager
+            .execute('message:persisted', toMessagePersistedPayload(revokedMessage), {
+              sessionId,
+              source: 'MessageService',
+            })
+            .catch(() => {});
         }
       }
     } catch (err) {
