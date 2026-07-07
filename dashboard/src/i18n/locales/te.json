@@ -119,6 +119,33 @@
     "deleteConfirm": "ఈ సందేశాన్ని అందరి కోసం తొలగించాలా?",
     "messageDeleted": "🚫 ఈ సందేశం తొలగించబడింది",
     "messageMasked": "🔒 లింక్ చేసిన పరికరాల్లో WhatsApp దీన్ని దాచింది — మీ ప్రధాన ఫోన్‌లో చూడండి",
+    "searchModeChats": "Chats",
+    "searchModeMessages": "Messages",
+    "search": {
+      "placeholder": "Search messages...",
+      "noResults": "No messages found",
+      "unavailable": "Search unavailable. Configure Meilisearch for global search.",
+      "moreResults": "+{{count}} more results",
+      "clear": "Clear search",
+      "openInChat": "Open in chat",
+      "chatNotFound": "Chat not found in available sessions",
+      "messageNotLoaded": "Message not in the loaded history",
+      "filters": {
+        "title": "Filters",
+        "type": "Type",
+        "direction": "Direction",
+        "hasMedia": "Has media",
+        "all": "All"
+      },
+      "results": {
+        "inChat": "in {{chatName}}",
+        "incoming": "Incoming",
+        "outgoing": "Outgoing"
+      },
+      "errors": {
+        "searchFailed": "Search failed"
+      }
+    },
     "errors": {
       "loadSessions": "సెషన్లను లోడ్ చేయడం విఫలమైంది",
       "loadChats": "చాట్‌లను లోడ్ చేయడం విఫలమైంది",
