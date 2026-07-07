@@ -44,47 +44,6 @@ export class SearchService {
     };
   }
 
-  /** Index or update a single message in Meilisearch. */
-  async indexMessage(message: Message): Promise<void> {
-    if (!this.isAvailable()) return;
-    try {
-      await this.meilisearchClient.addDocument(this.toDocument(message));
-    } catch (error) {
-      this.logger.warn(
-        `Failed to index message ${message.id}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  /** Remove a message from the Meilisearch index by its UUID. */
-  async deleteMessage(id: string): Promise<void> {
-    if (!this.isAvailable()) return;
-    try {
-      await this.meilisearchClient.deleteDocument(id);
-    } catch (error) {
-      this.logger.warn(
-        `Failed to delete message ${id} from Meilisearch: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  /**
-   * Fetch a message by (sessionId, waMessageId) and index it. For callers that persist via
-   * `repository.insert()` — which does NOT populate the DB-generated `id`/`createdAt` on the
-   * instance — so they can't hand a complete `Message` to {@link indexMessage}. The live
-   * `onMessage` handler in SessionService is the main caller. No-op + silent when Meilisearch is
-   * unavailable or the row can't be found (e.g. already deleted).
-   */
-  async indexMessageByWaId(sessionId: string, waMessageId: string): Promise<void> {
-    if (!this.isAvailable()) return;
-    try {
-      const msg = await this.messageRepository.findOne({ where: { sessionId, waMessageId } });
-      if (msg) await this.indexMessage(msg);
-    } catch {
-      /* best-effort — search sync must never break the message pipeline */
-    }
-  }
-
   /** Execute a search query against Meilisearch. */
   async search(dto: SearchQueryDto): Promise<SearchResultDto> {
     if (!this.isAvailable()) {

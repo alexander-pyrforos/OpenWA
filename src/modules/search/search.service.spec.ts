@@ -8,9 +8,7 @@ import { Message, MessageDirection, MessageStatus } from '../message/entities/me
 /** Writable, fully-typed stand-in for the bits of MeilisearchClient SearchService touches. */
 interface MeilisearchClientMock {
   available: boolean;
-  addDocument: jest.Mock<Promise<void>, [MeilisearchDocument]>;
   addDocuments: jest.Mock<Promise<void>, [MeilisearchDocument[]]>;
-  deleteDocument: jest.Mock<Promise<void>, [string]>;
   deleteAllDocuments: jest.Mock<Promise<void>, []>;
   search: jest.Mock<
     Promise<MeilisearchSearchResponse>,
@@ -67,9 +65,7 @@ describe('SearchService', () => {
   beforeEach(async () => {
     meilisearchClient = {
       available: true,
-      addDocument: jest.fn<Promise<void>, [MeilisearchDocument]>().mockResolvedValue(undefined),
       addDocuments: jest.fn<Promise<void>, [MeilisearchDocument[]]>().mockResolvedValue(undefined),
-      deleteDocument: jest.fn<Promise<void>, [string]>().mockResolvedValue(undefined),
       deleteAllDocuments: jest.fn<Promise<void>, []>().mockResolvedValue(undefined),
       search: jest
         .fn<Promise<MeilisearchSearchResponse>, [string, Record<string, string | boolean>, number, number]>()
@@ -103,163 +99,6 @@ describe('SearchService', () => {
 
       meilisearchClient.available = false;
       expect(service.isAvailable()).toBe(false);
-    });
-  });
-
-  // ── indexMessage ──────────────────────────────────────────────────
-
-  describe('indexMessage', () => {
-    it('transforms a Message into a Meilisearch document and indexes it', async () => {
-      const msg = makeMessage();
-
-      await service.indexMessage(msg);
-
-      expect(meilisearchClient.addDocument).toHaveBeenCalledTimes(1);
-      const doc = meilisearchClient.addDocument.mock.calls[0][0];
-      expect(doc).toEqual({
-        id: 'msg-uuid-1',
-        sessionId: 'sess-1',
-        waMessageId: 'wa-msg-1',
-        chatId: '628123456789@c.us',
-        chatName: 'Alice',
-        from: '628123456789@c.us',
-        to: 'me@s.whatsapp.net',
-        body: 'Hello world',
-        type: 'text',
-        direction: 'incoming',
-        status: 'sent',
-        hasMedia: false,
-        timestamp: 1706868000,
-        createdAt: '2026-01-15T10:00:00.000Z',
-      });
-    });
-
-    it('derives hasMedia=true when metadata.media is an object', async () => {
-      const msg = makeMessage({
-        metadata: { media: { mimetype: 'image/jpeg', filename: 'pic.jpg' } },
-      });
-
-      await service.indexMessage(msg);
-
-      const doc = meilisearchClient.addDocument.mock.calls[0][0];
-      expect(doc.hasMedia).toBe(true);
-    });
-
-    it('derives hasMedia=false when metadata.media is absent', async () => {
-      const msg = makeMessage({ metadata: { foo: 'bar' } });
-
-      await service.indexMessage(msg);
-
-      const doc = meilisearchClient.addDocument.mock.calls[0][0];
-      expect(doc.hasMedia).toBe(false);
-    });
-
-    it('derives hasMedia=false when metadata is null', async () => {
-      const msg = makeMessage({ metadata: null });
-
-      await service.indexMessage(msg);
-
-      const doc = meilisearchClient.addDocument.mock.calls[0][0];
-      expect(doc.hasMedia).toBe(false);
-    });
-
-    it('coerces a missing chatName to null (not undefined)', async () => {
-      const msg = makeMessage({ chatName: undefined });
-
-      await service.indexMessage(msg);
-
-      const doc = meilisearchClient.addDocument.mock.calls[0][0];
-      expect(doc.chatName).toBeNull();
-    });
-
-    it('is a no-op when Meilisearch is not available', async () => {
-      meilisearchClient.available = false;
-
-      await service.indexMessage(makeMessage());
-
-      expect(meilisearchClient.addDocument).not.toHaveBeenCalled();
-    });
-
-    it('swallows Meilisearch errors without throwing', async () => {
-      meilisearchClient.addDocument.mockRejectedValue(new Error('connection refused'));
-
-      await expect(service.indexMessage(makeMessage())).resolves.toBeUndefined();
-    });
-  });
-
-  // ── deleteMessage ─────────────────────────────────────────────────
-
-  describe('deleteMessage', () => {
-    it('deletes the document by its UUID', async () => {
-      await service.deleteMessage('msg-uuid-1');
-
-      expect(meilisearchClient.deleteDocument).toHaveBeenCalledWith('msg-uuid-1');
-    });
-
-    it('is a no-op when Meilisearch is not available', async () => {
-      meilisearchClient.available = false;
-
-      await service.deleteMessage('msg-uuid-1');
-
-      expect(meilisearchClient.deleteDocument).not.toHaveBeenCalled();
-    });
-
-    it('swallows Meilisearch errors without throwing', async () => {
-      meilisearchClient.deleteDocument.mockRejectedValue(new Error('boom'));
-
-      await expect(service.deleteMessage('msg-uuid-1')).resolves.toBeUndefined();
-    });
-  });
-
-  // ── indexMessageByWaId ─────────────────────────────────────────────
-
-  describe('indexMessageByWaId', () => {
-    it('looks the row up by (sessionId, waMessageId) and indexes it when found', async () => {
-      const msg = makeMessage({ id: 'msg-uuid-1', waMessageId: 'wa-msg-1' });
-      repository.findOne.mockResolvedValue(msg);
-
-      await service.indexMessageByWaId('sess-1', 'wa-msg-1');
-
-      expect(repository.findOne).toHaveBeenCalledWith({
-        where: { sessionId: 'sess-1', waMessageId: 'wa-msg-1' },
-      });
-      expect(meilisearchClient.addDocument).toHaveBeenCalledTimes(1);
-      expect(meilisearchClient.addDocument.mock.calls[0][0]).toEqual(
-        expect.objectContaining({ id: 'msg-uuid-1', sessionId: 'sess-1', waMessageId: 'wa-msg-1' }),
-      );
-    });
-
-    it('does nothing when the row is not found (already deleted)', async () => {
-      repository.findOne.mockResolvedValue(null);
-
-      await service.indexMessageByWaId('sess-1', 'wa-msg-1');
-
-      expect(repository.findOne).toHaveBeenCalledTimes(1);
-      expect(meilisearchClient.addDocument).not.toHaveBeenCalled();
-    });
-
-    it('is a no-op when Meilisearch is not available', async () => {
-      meilisearchClient.available = false;
-
-      await service.indexMessageByWaId('sess-1', 'wa-msg-1');
-
-      expect(repository.findOne).not.toHaveBeenCalled();
-      expect(meilisearchClient.addDocument).not.toHaveBeenCalled();
-    });
-
-    it('swallows errors silently so it never breaks the message pipeline', async () => {
-      repository.findOne.mockRejectedValue(new Error('connection reset'));
-
-      await expect(service.indexMessageByWaId('sess-1', 'wa-msg-1')).resolves.toBeUndefined();
-      expect(meilisearchClient.addDocument).not.toHaveBeenCalled();
-    });
-
-    it('swallows indexing errors silently', async () => {
-      const msg = makeMessage({ waMessageId: 'wa-msg-1' });
-      repository.findOne.mockResolvedValue(msg);
-      meilisearchClient.addDocument.mockRejectedValue(new Error('meili down'));
-
-      await expect(service.indexMessageByWaId('sess-1', 'wa-msg-1')).resolves.toBeUndefined();
     });
   });
 
