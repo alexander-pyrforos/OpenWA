@@ -141,6 +141,12 @@ services:
       # Plugins
       - PLUGINS_ENABLED=${PLUGINS_ENABLED:-true}
       - PLUGINS_DIR=${PLUGINS_DIR:-/app/data/plugins}
+      # Meilisearch (global message search — optional). Blank-forwarded so a
+      # dashboard switch or .env.generated can apply; set in .env/host to pin.
+      # Without MEILISEARCH_URL the search endpoint returns 501 (gracefully disabled).
+      - MEILISEARCH_URL=${MEILISEARCH_URL:-}
+      - MEILISEARCH_API_KEY=${MEILISEARCH_API_KEY:-}
+      - MEILISEARCH_INDEX_PREFIX=${MEILISEARCH_INDEX_PREFIX:-}
       # Security
       - API_MASTER_KEY=${API_MASTER_KEY:-}
       # Docker socket proxy (openwa-api never touches /var/run/docker.sock directly)
@@ -155,6 +161,9 @@ services:
         condition: service_healthy
         required: false
       redis:
+        condition: service_healthy
+        required: false
+      meilisearch:
         condition: service_healthy
         required: false
     healthcheck:
@@ -259,6 +268,34 @@ services:
       - 'com.openwa.service=storage'
       - 'com.openwa.builtin=true'
 
+  # ===== OPTIONAL: Built-in Meilisearch (global message search) =====
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: openwa-meilisearch
+    profiles: ['meilisearch', 'full']
+    restart: unless-stopped
+    networks:
+      - openwa-network
+    security_opt:
+      - 'no-new-privileges:true'
+    environment:
+      MEILI_NO_ANALYTICS: 'true'
+      # No committed default for MEILI_MASTER_KEY — the operator must set
+      # MEILISEARCH_API_KEY in .env; it becomes both the Meilisearch master key
+      # and the app's API key. Without it Meilisearch runs in "no auth" mode
+      # (development only; not recommended for production).
+      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-}
+    volumes:
+      - meilisearch-data:/meili_data
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:7700/health']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    labels:
+      - 'com.openwa.service=search'
+      - 'com.openwa.builtin=true'
+
 volumes:
   # Pin explicit volume names so the compose path and the Docker-API orchestration path (which uses
   # the literal `openwa_<svc>-data` names in docker.service.ts) bind the SAME volume regardless of the
@@ -274,6 +311,9 @@ volumes:
     driver: local
   minio-data:
     name: openwa_minio-data
+    driver: local
+  meilisearch-data:
+    name: openwa_meilisearch-data
     driver: local
 
 networks:

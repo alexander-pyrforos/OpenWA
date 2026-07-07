@@ -74,8 +74,17 @@ services:
       - WEBHOOK_TIMEOUT=${WEBHOOK_TIMEOUT:-10000}
       - WEBHOOK_MAX_RETRIES=${WEBHOOK_MAX_RETRIES:-3}
       - QUEUE_ENABLED=${QUEUE_ENABLED:-false}
+      # Meilisearch (global message search — optional). Defaults to the built-in
+      # meilisearch service so both containers start together with no .env setup.
+      - MEILISEARCH_URL=${MEILISEARCH_URL:-http://meilisearch:7700}
+      - MEILISEARCH_API_KEY=${MEILISEARCH_API_KEY:-}
+      - MEILISEARCH_INDEX_PREFIX=${MEILISEARCH_INDEX_PREFIX:-}
     volumes:
       - ./data:/app/data
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:2785/api/health/ready']
@@ -86,6 +95,28 @@ services:
 
   # The dashboard SPA is bundled into the image and served by NestJS on the same port:
   # open http://localhost:2785 — there is no separate dashboard container.
+
+  # ===== Built-in Meilisearch (global message search) =====
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: openwa-meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_NO_ANALYTICS: 'true'
+      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-}
+    volumes:
+      - meilisearch-data:/meili_data
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:7700/health']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - default
+
+volumes:
+  meilisearch-data:
+    driver: local
 
 networks:
   default:
