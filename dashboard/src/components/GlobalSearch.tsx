@@ -15,6 +15,7 @@ import {
   Phone,
 } from 'lucide-react';
 import { searchApi, sessionApi, type SearchHit } from '../services/api';
+import { escapeHtml, highlightQueryTerm, highlightMatchLine } from './search-highlight';
 import './GlobalSearch.css';
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
@@ -120,23 +121,6 @@ function useSearchThumbnails(results: SearchHit[]): Record<string, string> {
   return thumbs;
 }
 
-/** Escape HTML special characters in a raw string so it's safe to inject. */
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/** Wrap occurrences of `query` (case-insensitive) in <mark> within an already-HTML-escaped string. */
-function highlightQueryTerm(escaped: string, query: string): string {
-  const q = query.trim();
-  if (!q) return escaped;
-  const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return escaped.replace(new RegExp(`(${pattern})`, 'gi'), '<mark>$1</mark>');
-}
-
 /**
  * Build the body snippet: the line containing the match (highlighted) plus up to 2 lines of context
  * above and 2 below, with ellipses where lines are clipped.
@@ -183,8 +167,8 @@ function renderSnippet(hit: SearchHit, query: string): React.ReactNode {
           // Meilisearch already escaped the body; if its <mark> is missing on the match line, add ours.
           html = isMatchLine && !line.includes('<mark>') ? highlightQueryTerm(line, query) : line;
         } else {
-          // Raw body — escape, then highlight the match line.
-          html = isMatchLine ? highlightQueryTerm(escapeHtml(line), query) : escapeHtml(line);
+          // Raw body — escape, then highlight the match line (XSS guard lives in highlightMatchLine).
+          html = isMatchLine ? highlightMatchLine(line, query, { alreadyFormatted: false }) : escapeHtml(line);
         }
         return (
           <div
