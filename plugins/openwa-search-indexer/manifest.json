@@ -1,0 +1,39 @@
+{
+  "id": "openwa-search-indexer",
+  "name": "Meilisearch Indexer",
+  "version": "0.1.0",
+  "type": "extension",
+  "description": "Indexes every persisted message into Meilisearch for global search. Configure meilisearchUrl to match the host MEILISEARCH_URL.",
+  "author": "OpenWA",
+  "license": "MIT",
+  "main": "index.js",
+  "sessionScoped": false,
+  "permissions": ["net:fetch"],
+  "hooks": ["message:persisted"],
+  "net": {
+    "allow": [],
+    "allowConfigHosts": ["meilisearchUrl"]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "meilisearchUrl": {
+        "type": "string",
+        "title": "Meilisearch URL",
+        "description": "Must match the host's MEILISEARCH_URL. The indexer and the query API must point at the same instance. Use https:// for allowConfigHosts to admit the host automatically; an http:// URL must also be added to net.allow.",
+        "required": true
+      },
+      "meilisearchApiKey": {
+        "type": "string",
+        "title": "Meilisearch API key",
+        "secret": true
+      },
+      "indexPrefix": {
+        "type": "string",
+        "title": "Index prefix",
+        "default": "openwa_",
+        "description": "Must match the host's MEILISEARCH_INDEX_PREFIX."
+      }
+    }
+  }
+}
