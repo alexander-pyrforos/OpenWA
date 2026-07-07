@@ -34,12 +34,12 @@ import { createLogger } from '../../common/services/logger.service';
 import { EventsGateway } from '../events/events.gateway';
 import { WebhookService } from '../webhook/webhook.service';
 import { HookManager } from '../../core/hooks';
-import { SearchService } from '../search/search.service';
 import {
   deliveryStatusToMessageStatus,
   deliveryStatusToAck,
   ackStatusTransitionFrom,
 } from '../message/message-status.util';
+import { toMessagePersistedPayload } from '../message/message-payload.util';
 
 interface ReconnectState {
   attempts: number;
@@ -151,12 +151,6 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     // an inbound-only migrated contact's `@lid` and `@c.us` rows bridge in the read-path (#583 R3 Ph2).
     @Optional()
     private readonly lidMappingStore?: LidMappingStoreService,
-    // Global message search. Optional so SessionService stays constructible in tests that don't wire
-    // SearchModule; the indexing calls are guarded with `?.` and never block the message pipeline.
-    // Incoming/phone-outgoing messages are persisted here (via `.insert()`), so the Meilisearch sync
-    // hook lives here, not in MessageService (which only owns API-initiated sends).
-    @Optional()
-    private readonly searchService?: SearchService,
   ) {}
 
   /**
@@ -801,9 +795,20 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
             }
 
             // Global search: index the newly persisted message (best-effort, never blocks dispatch).
-            // `.insert()` doesn't populate the DB-generated `id`/`createdAt`, so indexMessageByWaId
-            // re-fetches the saved row before handing it to Meilisearch.
-            void this.searchService?.indexMessageByWaId(id, incoming.id)?.catch(() => {});
+            // `.insert()` doesn't populate the DB-generated `id`/`createdAt` on the instance, so re-fetch by
+            // (sessionId, waMessageId) to hand the hook a complete, IPC-safe payload.
+            void this.messageRepository
+              .findOne({ where: { sessionId: id, waMessageId: incoming.id } })
+              .then(msg => {
+                if (msg) {
+                  void this.hookManager
+                    .execute('message:persisted', toMessagePersistedPayload(msg), { sessionId: id, source: 'Engine' })
+                    .catch(() => {});
+                }
+              })
+              .catch(() => {
+                /* best-effort — indexing must never break the receive pipeline */
+              });
 
             // Dispatch to webhooks with potentially modified message
             void this.webhookService.dispatch(id, 'message.received', finalMessage);
@@ -975,7 +980,18 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
           .update({ sessionId: id, waMessageId: revokedWaMessageId }, { body: '', type: 'revoked' })
           .then(() => {
             // Re-sync the revoked row to Meilisearch so it's no longer matched by its old body.
-            void this.searchService?.indexMessageByWaId(id, revokedWaMessageId)?.catch(() => {});
+            void this.messageRepository
+              .findOne({ where: { sessionId: id, waMessageId: revokedWaMessageId } })
+              .then(msg => {
+                if (msg) {
+                  void this.hookManager
+                    .execute('message:persisted', toMessagePersistedPayload(msg), { sessionId: id, source: 'Engine' })
+                    .catch(() => {});
+                }
+              })
+              .catch(() => {
+                /* best-effort */
+              });
           })
           .catch(err => {
             this.logger.error(`Failed to update revoked message: ${revokedWaMessageId}`, String(err));
