@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { MeilisearchClient, MeilisearchDocument } from './meilisearch.client';
+import { MeilisearchClient, MeilisearchDocument, MeilisearchSearchHit } from './meilisearch.client';
 import { SearchQueryDto, SearchResultDto, SearchMessageHitDto } from './dto/search-query.dto';
 import { Message } from '../message/entities/message.entity';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -101,7 +101,7 @@ export class SearchService {
 
     const result = await this.meilisearchClient.search(dto.q, filters, dto.limit ?? 20, dto.offset ?? 0);
 
-    const hits: SearchMessageHitDto[] = result.hits.map(hit => ({
+    const hits: SearchMessageHitDto[] = result.hits.map((hit: MeilisearchSearchHit) => ({
       id: hit.id,
       sessionId: hit.sessionId,
       waMessageId: hit.waMessageId,
@@ -116,7 +116,7 @@ export class SearchService {
       hasMedia: hit.hasMedia,
       timestamp: hit.timestamp,
       createdAt: hit.createdAt,
-      _formatted: hit._formatted ? { body: (hit._formatted as Record<string, string>).body } : undefined,
+      _formatted: hit._formatted ? { body: hit._formatted.body } : undefined,
     }));
 
     return {

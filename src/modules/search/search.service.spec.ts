@@ -2,9 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import type { FindManyOptions } from 'typeorm';
 import { SearchService } from './search.service';
-import { MeilisearchClient, MeilisearchDocument } from './meilisearch.client';
+import { MeilisearchClient, MeilisearchDocument, MeilisearchSearchResponse } from './meilisearch.client';
 import { Message, MessageDirection, MessageStatus } from '../message/entities/message.entity';
-import type { SearchResponse } from 'meilisearch';
 
 /** Writable, fully-typed stand-in for the bits of MeilisearchClient SearchService touches. */
 interface MeilisearchClientMock {
@@ -14,7 +13,7 @@ interface MeilisearchClientMock {
   deleteDocument: jest.Mock<Promise<void>, [string]>;
   deleteAllDocuments: jest.Mock<Promise<void>, []>;
   search: jest.Mock<
-    Promise<SearchResponse<MeilisearchDocument>>,
+    Promise<MeilisearchSearchResponse>,
     [string, Record<string, string | boolean>, number, number]
   >;
 }
@@ -52,11 +51,11 @@ function makeMessage(overrides: MessageOverrides = {}): Message {
   } as Message;
 }
 
-/** A minimal SearchResponse — enough to satisfy the fields SearchService reads. */
+/** A minimal search response — enough to satisfy the fields SearchService reads. */
 function makeSearchResponse(
   hits: MeilisearchDocument[],
   estimatedTotalHits = hits.length,
-): SearchResponse<MeilisearchDocument> {
+): MeilisearchSearchResponse {
   return { hits, estimatedTotalHits };
 }
 
@@ -73,7 +72,7 @@ describe('SearchService', () => {
       deleteDocument: jest.fn<Promise<void>, [string]>().mockResolvedValue(undefined),
       deleteAllDocuments: jest.fn<Promise<void>, []>().mockResolvedValue(undefined),
       search: jest
-        .fn<Promise<SearchResponse<MeilisearchDocument>>, [string, Record<string, string | boolean>, number, number]>()
+        .fn<Promise<MeilisearchSearchResponse>, [string, Record<string, string | boolean>, number, number]>()
         .mockResolvedValue(makeSearchResponse([])),
     };
 

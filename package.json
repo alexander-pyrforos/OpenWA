@@ -142,8 +142,7 @@
     },
     "moduleNameMapper": {
       "^@whiskeysockets/baileys$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts",
-      "^@whiskeysockets/baileys/(.*)$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts",
-      "^meilisearch$": "<rootDir>/../test/__mocks__/meilisearch.ts"
+      "^@whiskeysockets/baileys/(.*)$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
