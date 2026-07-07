@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Search,
@@ -39,6 +39,25 @@ const PREVIEWABLE_TYPES = new Set(['image', 'video', 'sticker']);
 // and remounts. Keyed `${sessionId}::${chatId}` → promise of (waMessageId → dataURL).
 const thumbnailCache = new Map<string, Promise<Map<string, string>>>();
 
+// Module-level semaphore: caps concurrent distinct-chat history-with-media fetches at 3 globally,
+// shared across all hook instances so a broad search can't saturate the client's bandwidth.
+const MAX_CONCURRENT_CHAT_FETCHES = 3;
+let inFlight = 0;
+const pending: Array<() => void> = [];
+
+function scheduleChatFetch(fn: () => Promise<void>): void {
+  const run = () => {
+    inFlight++;
+    fn().finally(() => {
+      inFlight--;
+      const next = pending.shift();
+      if (next) next();
+    });
+  };
+  if (inFlight < MAX_CONCURRENT_CHAT_FETCHES) run();
+  else pending.push(run);
+}
+
 function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
@@ -55,70 +74,96 @@ function formatRelativeTime(dateStr: string): string {
 }
 
 /**
- * Lazy-load real image/video/sticker thumbnails for a set of search hits. Fetches each hit's chat
- * history WITH media (base64) once — cached per (session, chat) so multiple hits in the same chat
- * share one fetch — and matches by waMessageId. Falls back to a styled tile when the message isn't
- * in the recent history window or the fetch fails. Heavy per distinct chat, so only invoked for
- * previewable media types.
+ * Lazy-load real image/video/sticker thumbnails for a set of search hits. Instead of fetching every
+ * distinct chat's history-with-media up front, a row's chat is fetched only when that row scrolls
+ * into view (IntersectionObserver, 200px rootMargin). A module-level semaphore caps concurrent
+ * distinct-chat fetches at 3 globally. Each chat fetches at most once — cached per (session, chat)
+ * so multiple hits in the same chat share one fetch — and matches by waMessageId. Falls back to a
+ * styled tile when the message isn't in the recent history window or the fetch fails.
  */
-function useSearchThumbnails(results: SearchHit[]): Record<string, string> {
+function useSearchThumbnails(results: SearchHit[]): {
+  thumbs: Record<string, string>;
+  observe: (id: string) => (el: HTMLElement | null) => void;
+} {
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    // Group previewable media hits by chat so each chat fetches at most once.
-    const groups = new Map<string, { sessionId: string; chatId: string; hits: SearchHit[] }>();
+  // Group previewable media hits by chat so each chat fetches at most once.
+  const groups = useMemo(() => {
+    const m = new Map<string, { sessionId: string; chatId: string; hits: SearchHit[] }>();
     for (const hit of results) {
       if (!hit.hasMedia || !PREVIEWABLE_TYPES.has(hit.type)) continue;
       const key = `${hit.sessionId}::${hit.chatId}`;
-      if (!groups.has(key)) groups.set(key, { sessionId: hit.sessionId, chatId: hit.chatId, hits: [] });
-      groups.get(key)!.hits.push(hit);
+      if (!m.has(key)) m.set(key, { sessionId: hit.sessionId, chatId: hit.chatId, hits: [] });
+      m.get(key)!.hits.push(hit);
     }
-    if (groups.size === 0) return;
-
-    for (const { sessionId, chatId, hits } of groups.values()) {
-      const cacheKey = `${sessionId}::${chatId}`;
-      let promise = thumbnailCache.get(cacheKey);
-      if (!promise) {
-        promise = sessionApi
-          .getChatHistory(sessionId, chatId, 50, true)
-          .then(history => {
-            const map = new Map<string, string>();
-            for (const m of history) {
-              const media = m.media;
-              if (media?.data) {
-                const dataUrl = media.data.startsWith('data:')
-                  ? media.data
-                  : `data:${media.mimetype};base64,${media.data}`;
-                // Engine history `id` is the WA message id — matches SearchHit.waMessageId.
-                map.set(m.id, dataUrl);
-              }
-            }
-            return map;
-          })
-          .catch(() => new Map<string, string>());
-        thumbnailCache.set(cacheKey, promise);
-      }
-      void promise.then(map => {
-        if (cancelled) return;
-        setThumbs(prev => {
-          const next = { ...prev };
-          for (const hit of hits) {
-            const url = map.get(hit.waMessageId ?? hit.id);
-            if (url) next[hit.id] = url;
-          }
-          return next;
-        });
-      });
-    }
-
-    return () => {
-      cancelled = true;
-    };
+    return m;
   }, [results]);
 
-  return thumbs;
+  useEffect(() => {
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          const id = (e.target as HTMLElement).dataset.hitId;
+          if (!id) continue;
+          const hit = results.find(h => h.id === id);
+          if (!hit) continue;
+          const key = `${hit.sessionId}::${hit.chatId}`;
+          const group = groups.get(key);
+          if (!group) continue;
+          scheduleChatFetch(async () => {
+            let promise = thumbnailCache.get(key);
+            if (!promise) {
+              promise = sessionApi
+                .getChatHistory(group.sessionId, group.chatId, 50, true)
+                .then(history => {
+                  const map = new Map<string, string>();
+                  for (const m of history) {
+                    const media = m.media;
+                    if (media?.data) {
+                      const dataUrl = media.data.startsWith('data:')
+                        ? media.data
+                        : `data:${media.mimetype};base64,${media.data}`;
+                      // Engine history `id` is the WA message id — matches SearchHit.waMessageId.
+                      map.set(m.id, dataUrl);
+                    }
+                  }
+                  return map;
+                })
+                .catch(() => new Map<string, string>());
+              thumbnailCache.set(key, promise);
+            }
+            const map = await promise;
+            setThumbs(prev => {
+              const next = { ...prev };
+              for (const h of group.hits) {
+                const url = map.get(h.waMessageId ?? h.id);
+                if (url) next[h.id] = url;
+              }
+              return next;
+            });
+          });
+          io.unobserve(e.target); // fetch once per row
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observerRef.current = io;
+    return () => io.disconnect();
+  }, [results, groups]);
+
+  const observe = useCallback(
+    (id: string) => (el: HTMLElement | null) => {
+      if (el) {
+        el.dataset.hitId = id;
+        observerRef.current?.observe(el);
+      }
+    },
+    [],
+  );
+
+  return { thumbs, observe };
 }
 
 /**
@@ -231,7 +276,7 @@ export function GlobalSearch({ sessionId, onResultClick }: GlobalSearchProps) {
   const [hasMediaFilter, setHasMediaFilter] = useState<boolean | undefined>(undefined);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const thumbs = useSearchThumbnails(results);
+  const { thumbs, observe } = useSearchThumbnails(results);
 
   const doSearch = useCallback(async () => {
     if (!query.trim()) {
@@ -372,6 +417,7 @@ export function GlobalSearch({ sessionId, onResultClick }: GlobalSearchProps) {
           results.map(hit => (
             <button
               key={hit.id}
+              ref={observe(hit.id)}
               type="button"
               className="global-search-result"
               role="listitem"
