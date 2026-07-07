@@ -586,8 +586,8 @@ export class MessageService {
     // the dashboard renders the localized "message deleted" text.
     try {
       const result = await this.messageRepository.update({ sessionId, waMessageId: dto.messageId }, { body: '', type: 'revoked' });
-      // Update the search index: find the revoked message and re-index it (body cleared, type=revoked).
-      // The update returns affected rows; find the message to get its UUID for Meilisearch.
+      // Emit message:persisted with the blanked row so subscribers (e.g. the search indexer)
+      // overwrite the old document and the revoked body stops matching.
       if (result.affected && result.affected > 0) {
         const revokedMessage = await this.messageRepository.findOne({ where: { sessionId, waMessageId: dto.messageId } });
         if (revokedMessage) {
