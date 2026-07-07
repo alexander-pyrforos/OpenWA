@@ -18,7 +18,7 @@ function makeMessage(over: Partial<Message> = {}): Message {
     timestamp: 1700000000,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     ...over,
-  } as Message;
+  } as unknown as Message;
 }
 
 describe('toMessagePersistedPayload', () => {
@@ -35,7 +35,7 @@ describe('toMessagePersistedPayload', () => {
   it('derives hasMedia from metadata.media (object present → true)', () => {
     expect(toMessagePersistedPayload(makeMessage({ metadata: { media: { mimetype: 'image/jpeg' } } as unknown } as Message)).hasMedia).toBe(true);
     expect(toMessagePersistedPayload(makeMessage({ metadata: { media: null } as unknown } as Message)).hasMedia).toBe(false);
-    expect(toMessagePersistedPayload(makeMessage({ metadata: null })).hasMedia).toBe(false);
+    expect(toMessagePersistedPayload(makeMessage({ metadata: null } as unknown as Partial<Message>)).hasMedia).toBe(false);
   });
 
   it('strips the heavy media base64 — the payload must be small for the sandbox IPC', () => {
@@ -45,7 +45,7 @@ describe('toMessagePersistedPayload', () => {
   });
 
   it('handles null body / null waMessageId / null chatName', () => {
-    const p = toMessagePersistedPayload(makeMessage({ body: null, waMessageId: null, chatName: null }));
+    const p = toMessagePersistedPayload(makeMessage({ body: null, waMessageId: null, chatName: null } as unknown as Partial<Message>));
     expect(p.body).toBeNull();
     expect(p.waMessageId).toBeNull();
     expect(p.chatName).toBeNull();
