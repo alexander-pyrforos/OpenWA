@@ -17,7 +17,6 @@ import * as fs from 'fs';
 import * as qrcode from 'qrcode';
 import { UnprocessableEntityException } from '@nestjs/common';
 import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
-import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
 import { ChannelNotFoundError } from '../../common/errors/channel-not-found.error';
 import { ChannelMediaNotSupportedError } from '../../common/errors/channel-media-not-supported.error';
 import { EngineStatus } from '../interfaces/whatsapp-engine.interface';
@@ -1122,10 +1121,10 @@ describe('WhatsAppWebJsAdapter status methods', () => {
     },
   );
 
-  it('deleteStatus is still not supported (separate gap — revokeStatusMessage)', async () => {
-    await expect(readyAdapter({ sendMessage: jest.fn() }).deleteStatus('STATUS1')).rejects.toBeInstanceOf(
-      EngineNotSupportedError,
-    );
+  it('deleteStatus revokes via client.revokeStatusMessage(statusId)', async () => {
+    const revokeStatusMessage = jest.fn().mockResolvedValue(undefined);
+    await readyAdapter({ sendMessage: jest.fn(), revokeStatusMessage }).deleteStatus('STATUS1');
+    expect(revokeStatusMessage).toHaveBeenCalledWith('STATUS1');
   });
 });
 
