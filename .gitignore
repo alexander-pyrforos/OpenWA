@@ -15,6 +15,7 @@ coverage/
 
 # Environment
 .env
+.env.bak*
 .env.local
 .env.development.local
 .env.test.local
@@ -59,6 +60,7 @@ uploads/
 
 # Docker
 .docker/
+docker-compose.override.yml
 
 # Misc
 *.bak
@@ -78,3 +80,4 @@ docs/superpowers/
 CLAUDE.md
 _docs/
 .superpowers/
+.sdd-briefs/
