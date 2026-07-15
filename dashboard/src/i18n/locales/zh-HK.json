@@ -123,6 +123,31 @@
     "deleteConfirm": "為所有人刪除此訊息？",
     "messageDeleted": "🚫 此訊息已被刪除",
     "messageMasked": "🔒 WhatsApp 已對已連結裝置隱藏此訊息 — 請在主手機上查看",
+    "search": {
+      "placeholder": "Search messages...",
+      "noResults": "No messages found",
+      "unavailable": "Search unavailable. Configure Meilisearch for global search.",
+      "moreResults": "+{{count}} more results",
+      "clear": "Clear search",
+      "openInChat": "Open in chat",
+      "chatNotFound": "Chat not found in available sessions",
+      "messageNotLoaded": "Message not in the loaded history",
+      "filters": {
+        "title": "Filters",
+        "type": "Type",
+        "direction": "Direction",
+        "hasMedia": "Has media",
+        "all": "All"
+      },
+      "results": {
+        "inChat": "in {{chatName}}",
+        "incoming": "Incoming",
+        "outgoing": "Outgoing"
+      },
+      "errors": {
+        "searchFailed": "Search failed"
+      }
+    },
     "errors": {
       "loadSessions": "載入工作階段失敗",
       "loadChats": "載入聊天失敗",

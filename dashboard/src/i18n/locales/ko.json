@@ -123,6 +123,31 @@
     "deleteConfirm": "모두에게서 이 메시지를 삭제할까요?",
     "messageDeleted": "🚫 삭제된 메시지입니다",
     "messageMasked": "🔒 연결된 기기에서는 WhatsApp이 이 메시지를 가려 표시합니다 — 기본 휴대폰을 확인하세요",
+    "search": {
+      "placeholder": "Search messages...",
+      "noResults": "No messages found",
+      "unavailable": "Search unavailable. Configure Meilisearch for global search.",
+      "moreResults": "+{{count}} more results",
+      "clear": "Clear search",
+      "openInChat": "Open in chat",
+      "chatNotFound": "Chat not found in available sessions",
+      "messageNotLoaded": "Message not in the loaded history",
+      "filters": {
+        "title": "Filters",
+        "type": "Type",
+        "direction": "Direction",
+        "hasMedia": "Has media",
+        "all": "All"
+      },
+      "results": {
+        "inChat": "in {{chatName}}",
+        "incoming": "Incoming",
+        "outgoing": "Outgoing"
+      },
+      "errors": {
+        "searchFailed": "Search failed"
+      }
+    },
     "errors": {
       "loadSessions": "세션을 불러오지 못했습니다",
       "loadChats": "채팅을 불러오지 못했습니다",

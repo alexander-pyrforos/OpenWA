@@ -123,6 +123,31 @@
     "deleteConfirm": "Eliminare questo messaggio per tutti?",
     "messageDeleted": "🚫 Questo messaggio è stato eliminato",
     "messageMasked": "🔒 Nascosto da WhatsApp sui dispositivi collegati — controlla sul telefono principale",
+    "search": {
+      "placeholder": "Search messages...",
+      "noResults": "No messages found",
+      "unavailable": "Search unavailable. Configure Meilisearch for global search.",
+      "moreResults": "+{{count}} more results",
+      "clear": "Clear search",
+      "openInChat": "Open in chat",
+      "chatNotFound": "Chat not found in available sessions",
+      "messageNotLoaded": "Message not in the loaded history",
+      "filters": {
+        "title": "Filters",
+        "type": "Type",
+        "direction": "Direction",
+        "hasMedia": "Has media",
+        "all": "All"
+      },
+      "results": {
+        "inChat": "in {{chatName}}",
+        "incoming": "Incoming",
+        "outgoing": "Outgoing"
+      },
+      "errors": {
+        "searchFailed": "Search failed"
+      }
+    },
     "errors": {
       "loadSessions": "Impossibile caricare le sessioni",
       "loadChats": "Impossibile caricare le chat",

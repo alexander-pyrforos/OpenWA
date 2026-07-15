@@ -861,7 +861,7 @@ export function Chats() {
         subtitle={t('chats.subtitle')}
         actions={
           sessions.length > 0 && (
-            <GlobalSearch currentSessionId={selectedSessionId} onHit={handleSearchHit} />
+            <GlobalSearch sessionId={selectedSessionId} onResultClick={handleSearchHit} />
           )
         }
       />

@@ -321,6 +321,7 @@ export interface SearchParams {
   direction?: string;
   type?: string;
   from?: string;
+  hasMedia?: boolean;
   /** Epoch-ms lower bound (inclusive) — the backend binds against messages.timestamp (/1000). */
   dateFrom?: number;
   /** Epoch-ms upper bound (inclusive). */
@@ -330,18 +331,26 @@ export interface SearchParams {
 }
 
 export interface SearchHit {
-  messageId: string;
+  id: string;
   waMessageId: string;
   sessionId: string;
   chatId: string;
-  body: string;
+  chatName: string | null;
+  from: string;
+  to: string;
+  body: string | null;
   /** Provider-generated excerpt with `<mark>` highlight markers — render as text, never as HTML. */
   snippet: string;
   /** Epoch-seconds (mirrors the persisted messages.timestamp column). */
   timestamp: number;
+  /** ISO-8601 createdAt from the DB row. */
+  createdAt: string;
   type: string;
   direction: string;
-  from: string;
+  /** True when the message type typically carries media (image/video/audio/voice/sticker/document). */
+  hasMedia: boolean;
+  /** Meilisearch _formatted body (may carry <mark> tags). Absent from the built-in FTS provider. */
+  _formatted?: { body?: string };
   score?: number;
 }
 

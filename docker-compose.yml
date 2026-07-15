@@ -290,6 +290,23 @@ services:
       - 'com.openwa.service=storage'
       - 'com.openwa.builtin=true'
 
+  # ===== OPTIONAL: Meilisearch (full-text search backend) =====
+  meilisearch:
+    image: getmeili/meilisearch:v1.12.8
+    container_name: openwa-meilisearch
+    profiles:
+      - meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-}
+    volumes:
+      - openwa-data:/data
+    networks:
+      - openwa-network
+    labels:
+      - 'com.openwa.service=search'
+      - 'com.openwa.builtin=true'
+
 volumes:
   # Pin explicit volume names so the compose path and the Docker-API orchestration path (which uses
   # the literal `openwa_<svc>-data` names in docker.service.ts) bind the SAME volume regardless of the

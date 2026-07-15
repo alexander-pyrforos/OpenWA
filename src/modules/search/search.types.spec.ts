@@ -11,16 +11,20 @@ describe('search.types', () => {
       health: (): Promise<SearchHealth> => Promise.resolve({ ok: true }),
     };
     const hit: SearchHit = {
-      messageId: 'm1',
+      id: 'm1',
       waMessageId: 'w1',
       sessionId: 's1',
       chatId: 'c1',
+      chatName: null,
+      from: 'me@c.us',
+      to: 'them@c.us',
       body: 'hi',
       snippet: '<mark>hi</mark>',
       timestamp: 1,
+      createdAt: '2025-01-01T00:00:00.000Z',
       type: 'text',
       direction: MessageDirection.OUTGOING,
-      from: 'me@c.us',
+      hasMedia: false,
       score: 1,
     };
     expect(provider.id).toBe('test');

@@ -56,24 +56,28 @@ describe('PluginSearchProvider', () => {
   });
 
   const mkHit = (overrides: Partial<SearchHit>): SearchHit => ({
-    messageId: 'm',
+    id: 'm',
     waMessageId: 'w',
     sessionId: 's1',
     chatId: 'c',
+    chatName: null,
+    from: 'a@c.us',
+    to: 'b@c.us',
     body: 'hi',
     snippet: 'hi',
     timestamp: 1,
+    createdAt: '2025-01-01T00:00:00.000Z',
     type: 'text',
     direction: MessageDirection.OUTGOING,
-    from: 'a@c.us',
+    hasMedia: false,
     ...overrides,
   });
 
   it('strips hits whose sessionId is outside query.sessionIds (host-side re-filter)', async () => {
     // The plugin is trusted to honor sessionIds, but a bug/leak must not surface an out-of-scope hit.
     // Without the host-side filter the leaked hit would pass straight through to the caller.
-    const inScope = mkHit({ messageId: 'm1', sessionId: 's1' });
-    const leaked = mkHit({ messageId: 'm2', sessionId: 'sX' });
+    const inScope = mkHit({ id: 'm1', sessionId: 's1' });
+    const leaked = mkHit({ id: 'm2', sessionId: 'sX' });
     const results: SearchResults = { hits: [inScope, leaked], total: 2, tookMs: 3, provider: 'plugin:p' };
     const dispatchSearch = jest.fn().mockResolvedValue({ ok: true, results });
     const p = new PluginSearchProvider('p', 'P', fakeTransport({ dispatchSearch }), 1000);
@@ -89,7 +93,7 @@ describe('PluginSearchProvider', () => {
     // A well-behaved plugin returns a full page of in-scope hits with the true total spanning more pages.
     // Overwriting total with the page hit count would make "Load More" (hits.length < total) never fire,
     // stranding every result past page 1 for a scoped key.
-    const hits = [mkHit({ messageId: 'm1', sessionId: 's1' }), mkHit({ messageId: 'm2', sessionId: 's1' })];
+    const hits = [mkHit({ id: 'm1', sessionId: 's1' }), mkHit({ id: 'm2', sessionId: 's1' })];
     const results: SearchResults = { hits, total: 500, tookMs: 3, provider: 'plugin:p' };
     const dispatchSearch = jest.fn().mockResolvedValue({ ok: true, results });
     const p = new PluginSearchProvider('p', 'P', fakeTransport({ dispatchSearch }), 1000);
@@ -100,8 +104,8 @@ describe('PluginSearchProvider', () => {
   });
 
   it('does not re-filter when sessionIds is unset (admin / unrestricted key)', async () => {
-    const h1 = mkHit({ messageId: 'm1', sessionId: 's1' });
-    const h2 = mkHit({ messageId: 'm2', sessionId: 'sX' });
+    const h1 = mkHit({ id: 'm1', sessionId: 's1' });
+    const h2 = mkHit({ id: 'm2', sessionId: 'sX' });
     const results: SearchResults = { hits: [h1, h2], total: 2, tookMs: 3, provider: 'plugin:p' };
     const dispatchSearch = jest.fn().mockResolvedValue({ ok: true, results });
     const p = new PluginSearchProvider('p', 'P', fakeTransport({ dispatchSearch }), 1000);
@@ -116,8 +120,8 @@ describe('PluginSearchProvider', () => {
     // (applyFilters: `q.sessionIds && q.sessionIds.length`); an empty array is a no-op there. The
     // host-side re-filter must match that exactly so swapping providers never changes results for the
     // same query — diverging here would itself be a bug.
-    const h1 = mkHit({ messageId: 'm1', sessionId: 's1' });
-    const h2 = mkHit({ messageId: 'm2', sessionId: 'sX' });
+    const h1 = mkHit({ id: 'm1', sessionId: 's1' });
+    const h2 = mkHit({ id: 'm2', sessionId: 'sX' });
     const results: SearchResults = { hits: [h1, h2], total: 2, tookMs: 1, provider: 'plugin:p' };
     const dispatchSearch = jest.fn().mockResolvedValue({ ok: true, results });
     const p = new PluginSearchProvider('p', 'P', fakeTransport({ dispatchSearch }), 1000);

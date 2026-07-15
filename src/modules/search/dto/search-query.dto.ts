@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, IsEnum, IsNumber, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsString, IsNotEmpty, IsOptional, IsEnum, IsNumber, Min, IsBoolean } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 import { MessageDirection } from '../../message/entities/message.entity';
 import type { MessageType } from '../../../engine/interfaces/whatsapp-engine.interface';
 
@@ -69,4 +69,10 @@ export class SearchQueryDto {
   @IsNumber()
   @Min(0)
   offset?: number;
+
+  @ApiPropertyOptional({ description: 'Only return messages that have media attachments', type: Boolean })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  hasMedia?: boolean;
 }

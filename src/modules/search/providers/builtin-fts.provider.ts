@@ -14,13 +14,17 @@ interface FtsResultRow {
   wa_message_id: string | null;
   session_id: string;
   chat_id: string;
-  from: string;
+  chat_name: string | null;
+  from_col: string;
+  to_col: string;
   body: string | null;
   timestamp: string | number | null;
+  created_at: string;
   type: string;
   direction: string;
   snippet: string | null;
   score: number | string | null;
+  has_media: boolean | number;
 }
 
 interface CountRow {
@@ -129,16 +133,20 @@ export class BuiltInFtsProvider implements SearchProvider {
 
   private mapRow(r: FtsResultRow): SearchHit {
     return {
-      messageId: r.id,
+      id: r.id,
       waMessageId: r.wa_message_id ?? '',
       sessionId: r.session_id,
       chatId: r.chat_id,
+      chatName: r.chat_name,
+      from: r.from_col,
+      to: r.to_col,
       body: r.body ?? '',
       snippet: r.snippet ?? '',
       timestamp: Number(r.timestamp ?? 0),
+      createdAt: r.created_at,
       type: r.type as MessageType,
       direction: r.direction as MessageDirection,
-      from: r.from,
+      hasMedia: Boolean(r.has_media),
       score: r.score == null ? undefined : Number(r.score),
     };
   }
@@ -163,7 +171,7 @@ export class BuiltInFtsProvider implements SearchProvider {
     const where: string[] = [`messages_fts MATCH ${ph()}`];
     params.push(q.q);
     this.applyFilters(where, params, q, 'm.', ph);
-    const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."from" AS "from", m."body", m."timestamp", m."type", m."direction", snippet(messages_fts, 0, '<mark>', '</mark>', '…', ${MAX_SNIPPET_WORDS}) AS snippet, rank AS score`;
+    const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."chatName" AS chat_name, m."from" AS from_col, m."to" AS to_col, m."body", m."timestamp", m."createdAt" AS created_at, m."type", m."direction", CASE WHEN m."type" IN ('image','video','audio','voice','sticker','document') THEN 1 ELSE 0 END AS has_media, snippet(messages_fts, 0, '<mark>', '</mark>', '…', ${MAX_SNIPPET_WORDS}) AS snippet, rank AS score`;
     const sql = `SELECT ${cols} FROM messages_fts JOIN messages m ON m."rowid" = messages_fts."rowid" WHERE ${where.join(' AND ')} ORDER BY rank, m."timestamp" DESC LIMIT ${ph()} OFFSET ${ph()}`;
     params.push(limit, offset);
     return { sql, params };
@@ -183,7 +191,7 @@ export class BuiltInFtsProvider implements SearchProvider {
     this.applyFilters(where, params, q, 'm.', ph);
     // StartSel/StopSel are pinned to <mark>/</mark> to match the SQLite FTS5 snippet() output, so the
     // SearchHit.snippet contract stays dialect-agnostic (PG's ts_headline defaults to <b>/</b>).
-    const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."from", m."body", m."timestamp", m."type", m."direction", ts_headline('simple', m."body", q.query, 'MaxFragments=1, MaxWords=${MAX_SNIPPET_WORDS}, StartSel=<mark>, StopSel=</mark>') AS snippet, ts_rank(m.body_ts, q.query) AS score`;
+    const cols = `m."id", m."waMessageId" AS wa_message_id, m."sessionId" AS session_id, m."chatId" AS chat_id, m."chatName" AS chat_name, m."from" AS from_col, m."to" AS to_col, m."body", m."timestamp", m."createdAt" AS created_at, m."type", m."direction", CASE WHEN m."type" IN ('image','video','audio','voice','sticker','document') THEN true ELSE false END AS has_media, ts_headline('simple', m."body", q.query, 'MaxFragments=1, MaxWords=${MAX_SNIPPET_WORDS}, StartSel=<mark>, StopSel=</mark>') AS snippet, ts_rank(m.body_ts, q.query) AS score`;
     const sql = `SELECT ${cols} FROM messages m, ${ftsTerm} WHERE ${where.join(' AND ')} ORDER BY score DESC, m."timestamp" DESC LIMIT ${ph()} OFFSET ${ph()}`;
     params.push(limit, offset);
     return { sql, params };
@@ -229,6 +237,9 @@ export class BuiltInFtsProvider implements SearchProvider {
     if (q.dateTo) {
       where.push(`${prefix}"timestamp" <= ${ph()}`);
       params.push(Math.floor(q.dateTo / 1000));
+    }
+    if (q.hasMedia) {
+      where.push(`${prefix}"type" IN ('image', 'video', 'audio', 'voice', 'sticker', 'document')`);
     }
   }
 
