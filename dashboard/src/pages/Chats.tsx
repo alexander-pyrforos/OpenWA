@@ -21,6 +21,7 @@ import {
   sessionApi,
   messageApi,
   asMessageType,
+  fetchMessageMedia,
   type Session,
   type Chat,
   type MessageType,
@@ -36,6 +37,8 @@ import { GlobalSearch } from '../components/GlobalSearch';
 import {
   useChatMessages,
   useChatMessagesActions,
+  useChatMessagesTotal,
+  useLoadOlderMessages,
   messagesQueryKey,
 } from '../hooks/useChatMessages';
 import { useChatScrollPosition } from '../hooks/useChatScrollPosition';
@@ -76,7 +79,14 @@ const messageTypeFromMime = (mimetype: string): MessageType => {
 
 const getMediaSrc = (media?: MessageMedia): string => {
   if (!media || !media.data) return '';
-  if (media.data.startsWith('data:') || media.data.startsWith('http://') || media.data.startsWith('https://')) {
+  // `blob:` URLs (created by fetchMessageMedia for on-demand history media) pass through unchanged,
+  // alongside the existing `data:`/`http(s):` cases, so they don't get re-wrapped as base64.
+  if (
+    media.data.startsWith('data:') ||
+    media.data.startsWith('http://') ||
+    media.data.startsWith('https://') ||
+    media.data.startsWith('blob:')
+  ) {
     return media.data;
   }
   return `data:${media.mimetype};base64,${media.data}`;
@@ -109,6 +119,73 @@ export function Chats() {
   const queryClient = useQueryClient();
   const [messageInput, setMessageInput] = useState<string>('');
   const [sending, setSending] = useState<boolean>(false);
+
+  // Full-history row count + load-older pagination (B). `total` is the DB's full row count for this
+  // chat; the messages slice only holds the newest 100 (plus anything prepended). `hasOlder` decides
+  // whether the "Load older" control renders. Both use staleTime: Infinity so paging never refetches
+  // the whole slice — useLoadOlderMessages only prepends older pages onto the cached array.
+  const { data: total } = useChatMessagesTotal(selectedSessionId, activeChat?.id ?? null);
+  const { mutate: loadOlder, isPending: loadingOlder } = useLoadOlderMessages(
+    selectedSessionId,
+    activeChat?.id ?? null,
+  );
+  const hasOlder = messages.length < (total ?? messages.length);
+
+  // D3 — click-to-load media: history media arrives as an omitted placeholder. On click we fetch the
+  // bytes from the media endpoint, turn the Blob into an object URL, and cache it per message id so
+  // the normal renderMedia branches render it. Per-message loading/failed flags drive the button
+  // state. Blob URLs are document-scoped and must be revoked to avoid leaks (chat-switch + unmount).
+  const [loadedMediaUrls, setLoadedMediaUrls] = useState<Record<string, string>>({});
+  const [mediaLoading, setMediaLoading] = useState<Record<string, boolean>>({});
+  const [mediaLoadFailed, setMediaLoadFailed] = useState<Record<string, boolean>>({});
+  // Mirror for the unmount cleanup (the state closure would otherwise be stale).
+  const loadedMediaUrlsRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    loadedMediaUrlsRef.current = loadedMediaUrls;
+  }, [loadedMediaUrls]);
+
+  const handleLoadMedia = useCallback(
+    async (msg: ChatMessageView) => {
+      const mediaId = msg.waMessageId ?? msg.id;
+      if (!mediaId) return;
+      setMediaLoading(prev => ({ ...prev, [msg.id]: true }));
+      setMediaLoadFailed(prev => ({ ...prev, [msg.id]: false }));
+      try {
+        const blob = await fetchMessageMedia(selectedSessionId, mediaId);
+        const url = URL.createObjectURL(blob);
+        setLoadedMediaUrls(prev => {
+          // Revoke any previous URL for this message before replacing (retry / re-fetch case).
+          const old = prev[msg.id];
+          if (old) URL.revokeObjectURL(old);
+          return { ...prev, [msg.id]: url };
+        });
+      } catch (err) {
+        setMediaLoadFailed(prev => ({ ...prev, [msg.id]: true }));
+        showErrorToast(t('chats.media.loadMediaFailed'), err instanceof Error ? err.message : undefined);
+      } finally {
+        setMediaLoading(prev => ({ ...prev, [msg.id]: false }));
+      }
+    },
+    [selectedSessionId, t, showErrorToast],
+  );
+
+  // Revoke blob URLs when leaving a chat (the per-message map is chat-scoped) and on page unmount.
+  // Chat switch clears the maps so stale URLs from the previous chat don't leak and don't accidentally
+  // match a different message that reused the same row id.
+  useEffect(() => {
+    setLoadedMediaUrls(prev => {
+      for (const url of Object.values(prev)) URL.revokeObjectURL(url);
+      return {};
+    });
+    setMediaLoading({});
+    setMediaLoadFailed({});
+  }, [activeChat?.id]);
+
+  useEffect(() => {
+    return () => {
+      for (const url of Object.values(loadedMediaUrlsRef.current)) URL.revokeObjectURL(url);
+    };
+  }, []);
 
   // Lightbox state for media viewer
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -522,6 +599,49 @@ export function Chats() {
     pendingHitRef.current = null;
   }, [activeChat, loadingMessages, messages, messagesContainerRef]);
 
+  // --- Load-older scroll anchor (B) ---
+  // Prepending older messages grows scrollHeight above the viewport; without anchoring, the view
+  // jumps. Before calling loadOlder we snapshot the geometry of the currently-first message element
+  // (its DOM node + offsetTop) and the current scrollTop. Once the older page renders, that same DOM
+  // node (kept by React via its `key`) has shifted down by exactly the prepended height; we restore
+  // scrollTop by that delta so the viewport stays on the same content. The "first message changed"
+  // check distinguishes a real prepend from a failed load or a bottom WS append (which don't move the
+  // first message), so this never disturbs useChatScrollPosition's restore or onMessageAppended.
+  const prependAnchorRef = useRef<{
+    firstEl: HTMLElement | null;
+    firstTop: number;
+    prevScrollTop: number;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    if (!anchor) return;
+    prependAnchorRef.current = null;
+    const el = messagesContainerRef.current;
+    if (!el || !anchor.firstEl) return;
+    // Only adjust when a prepend actually happened: the previously-first message is no longer the
+    // first .message-bubble-wrapper (older rows were inserted above it). A failed load or a WS
+    // append leaves the first message unchanged → no-op.
+    const currentFirst = el.querySelector<HTMLElement>('.message-bubble-wrapper');
+    if (currentFirst === anchor.firstEl) return;
+    el.scrollTop = anchor.prevScrollTop + (anchor.firstEl.offsetTop - anchor.firstTop);
+  }, [messages.length, messagesContainerRef]);
+
+  const handleLoadOlder = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) {
+      loadOlder(messages.length);
+      return;
+    }
+    const firstMsg = el.querySelector<HTMLElement>('.message-bubble-wrapper');
+    prependAnchorRef.current = {
+      firstEl: firstMsg,
+      firstTop: firstMsg?.offsetTop ?? 0,
+      prevScrollTop: el.scrollTop,
+    };
+    loadOlder(messages.length);
+  }, [loadOlder, messages.length, messagesContainerRef]);
+
   // 5. Handle file selection & base64 conversion
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -711,19 +831,27 @@ export function Chats() {
   );
 
   // Image media items for the lightbox, in render order. `getMediaSrc` reconstructs a usable src
-  // from either a base64 payload or a URL — the ChatMessageView shape stores both in `data`.
+  // from either a base64 payload or a URL — the ChatMessageView shape stores both in `data`. A
+  // click-loaded history image (omitted placeholder) contributes its blob URL from loadedMediaUrls.
   const imageMedia = useMemo<LightboxItem[]>(
     () =>
       messages
-        .filter(m => m.type === 'image' && Boolean(getMediaSrc(m.metadata?.media)))
-        .map(m => ({
-          id: m.id,
-          url: getMediaSrc(m.metadata?.media),
-          alt: m.body || m.metadata?.media?.filename || '',
-          senderName: undefined,
-          timestamp: formatChatTime(m.timestamp || Math.floor(new Date(m.createdAt).getTime() / 1000)),
-        })),
-    [messages, formatChatTime],
+        .filter(m => {
+          if (m.type !== 'image') return false;
+          const loadedUrl = m.metadata?.media?.omitted ? loadedMediaUrls[m.id] : undefined;
+          return loadedUrl ? true : Boolean(getMediaSrc(m.metadata?.media));
+        })
+        .map(m => {
+          const loadedUrl = m.metadata?.media?.omitted ? loadedMediaUrls[m.id] : undefined;
+          return {
+            id: m.id,
+            url: loadedUrl || getMediaSrc(m.metadata?.media),
+            alt: m.body || m.metadata?.media?.filename || '',
+            senderName: undefined,
+            timestamp: formatChatTime(m.timestamp || Math.floor(new Date(m.createdAt).getTime() / 1000)),
+          };
+        }),
+    [messages, formatChatTime, loadedMediaUrls],
   );
 
   return (
@@ -886,7 +1014,29 @@ export function Chats() {
                       <span>{t('chats.noMessagesInChat')}</span>
                     </div>
                   ) : (
-                    messages.map(msg => {
+                    <>
+                      {/* B — Load older: prepend an older DB page on click. Only render while the
+                          loaded slice is shorter than the DB's full row count (total). The scroll
+                          anchor (handleLoadOlder + prependAnchorRef) keeps the viewport from jumping
+                          when older rows are inserted above the current scroll position. */}
+                      {hasOlder && (
+                        <div className="load-older-control">
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            disabled={loadingOlder}
+                            onClick={handleLoadOlder}
+                          >
+                            {loadingOlder ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <ArrowLeft size={14} />
+                            )}
+                            {loadingOlder ? t('chats.loadingOlder') : t('chats.loadOlder')}
+                          </button>
+                        </div>
+                      )}
+                      {messages.map(msg => {
                       const isMe = msg.direction === 'outgoing';
                       const formattedTime = formatTime(
                         msg.timestamp || Math.floor(new Date(msg.createdAt).getTime() / 1000),
@@ -931,10 +1081,39 @@ export function Chats() {
                           );
                         }
                         if (!mediaInfo) return null;
-                        if (mediaInfo.omitted) {
-                          return <div className="message-media-omitted">📎 {t('chats.media.omitted')}</div>;
+                        // D3: an omitted history-media row arrives as a placeholder. If we've already
+                        // fetched its bytes (loadedMediaUrls), fall through with the blob URL as `data`
+                        // so the normal image/video/audio/document branches render it. Otherwise show a
+                        // click-to-load button (only when the row carries a waMessageId — history media
+                        // always does; without one there's nothing to fetch, so keep the static label).
+                        const loadedUrl = mediaInfo.omitted ? loadedMediaUrls[msg.id] : undefined;
+                        const effectiveMedia: MessageMedia | undefined = loadedUrl
+                          ? { ...mediaInfo, omitted: false, data: loadedUrl }
+                          : mediaInfo;
+                        if (mediaInfo.omitted && !loadedUrl) {
+                          const mediaId = msg.waMessageId ?? msg.id;
+                          if (!mediaId) {
+                            return <div className="message-media-omitted">📎 {t('chats.media.omitted')}</div>;
+                          }
+                          const isLoading = mediaLoading[msg.id];
+                          const failed = mediaLoadFailed[msg.id];
+                          return (
+                            <button
+                              type="button"
+                              className="btn-secondary message-media-load-btn"
+                              disabled={isLoading}
+                              onClick={() => handleLoadMedia(msg)}
+                            >
+                              {isLoading ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Paperclip size={14} />
+                              )}
+                              {failed ? t('chats.media.loadMediaFailed') : t('chats.media.loadMedia')}
+                            </button>
+                          );
                         }
-                        const mediaSrc = getMediaSrc(mediaInfo);
+                        const mediaSrc = getMediaSrc(effectiveMedia);
                         if (!mediaSrc) return null;
 
                         switch (msg.type) {
@@ -944,7 +1123,7 @@ export function Chats() {
                               <div className="message-media-image">
                                 <img
                                   src={mediaSrc}
-                                  alt={mediaInfo.filename || t('chats.media.image')}
+                                  alt={effectiveMedia.filename || t('chats.media.image')}
                                   className="chat-image-media"
                                   onClick={() => {
                                     const idx = imageMedia.findIndex(x => x.id === msg.id);
@@ -972,10 +1151,10 @@ export function Chats() {
                               <div className="message-media-document">
                                 <a
                                   href={mediaSrc}
-                                  download={mediaInfo.filename || 'document'}
+                                  download={effectiveMedia.filename || 'document'}
                                   className="chat-document-media"
                                 >
-                                  📎 {mediaInfo.filename || t('chats.downloadDocument')}
+                                  📎 {effectiveMedia.filename || t('chats.downloadDocument')}
                                 </a>
                               </div>
                             );
@@ -1104,7 +1283,8 @@ export function Chats() {
                           </div>
                         </div>
                       );
-                    })
+                    })}
+                    </>
                   )}
                 </div>
 

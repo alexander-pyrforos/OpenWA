@@ -85,7 +85,9 @@
       "callVideo": "Video call",
       "callVideoMissed": "Missed video call",
       "omitted": "Media",
-      "image": "Image"
+      "image": "Image",
+      "loadMedia": "Load media",
+      "loadMediaFailed": "Failed to load media"
     },
     "subtitle": "Send and reply to WhatsApp messages in real time",
     "noSessionsTitle": "No connected sessions",
@@ -99,6 +101,8 @@
     "loadingMessages": "Loading messages...",
     "noMessagesInChat": "No messages yet. Send the first message to get started!",
     "downloadDocument": "Download document",
+    "loadOlder": "Load older",
+    "loadingOlder": "Loading…",
     "actions": {
       "reply": "Reply",
       "react": "React",

@@ -85,7 +85,9 @@
       "callVideo": "視像通話",
       "callVideoMissed": "未接視像通話",
       "omitted": "媒體",
-      "image": "圖片"
+      "image": "圖片",
+      "loadMedia": "載入媒體",
+      "loadMediaFailed": "載入媒體失敗"
     },
     "subtitle": "即時傳送和回覆 WhatsApp 訊息",
     "noSessionsTitle": "沒有已連線的工作階段",
@@ -99,6 +101,8 @@
     "loadingMessages": "正在載入訊息...",
     "noMessagesInChat": "尚無訊息。傳送第一則訊息即可開始！",
     "downloadDocument": "下載文件",
+    "loadOlder": "載入更早",
+    "loadingOlder": "載入中…",
     "actions": {
       "reply": "回覆",
       "react": "回應",

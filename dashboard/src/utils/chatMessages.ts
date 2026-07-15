@@ -35,14 +35,30 @@ const msgKey = (m: ChatMessage): string => m.waMessageId ?? m.id;
 const msgTime = (m: ChatMessage): number =>
   typeof m.timestamp === 'number' ? m.timestamp : Math.floor(Date.parse(m.createdAt) / 1000) || 0;
 
+// Shared dedup + ascending sort for both the initial merge and load-older prepend. Dedup is keyed
+// by `waMessageId ?? id`; on conflict the LAST-inserted entry wins (callers insert the authoritative
+// copy second). Ascending by msgTime then `createdAt.localeCompare` as a tiebreaker — identical
+// ordering everywhere so paging never reorders rows and the two code paths can't drift.
+function dedupAndSort<T extends ChatMessage>(all: T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const m of all) byId.set(msgKey(m), m); // last duplicate wins
+  return [...byId.values()].sort((a, b) => msgTime(a) - msgTime(b) || a.createdAt.localeCompare(b.createdAt));
+}
+
 // Merge persisted DB messages with engine history into one ascending thread. The engine fills the
 // backfill (history from before the gateway captured anything); the DB copy wins on conflict so the
 // real delivery status survives. Deduped by the wweb.js serialized id (engine `id` == DB `waMessageId`).
 export function mergeChatMessages(db: ChatMessage[], history: ChatMessage[]): ChatMessage[] {
-  const byId = new Map<string, ChatMessage>();
-  for (const m of history) byId.set(msgKey(m), m);
-  for (const m of db) byId.set(msgKey(m), m); // DB overwrites the engine copy (authoritative status)
-  return [...byId.values()].sort((a, b) => msgTime(a) - msgTime(b) || a.createdAt.localeCompare(b.createdAt));
+  // DB overwrites the engine copy (authoritative delivery status) — insert history first, DB last.
+  return dedupAndSort([...history, ...db]);
+}
+
+// Prepend an older DB page (load-older) onto the already-loaded slice. The already-loaded copy wins
+// on conflict (its delivery status/metadata are fresher than a re-fetched older page's); older rows
+// are inserted first so existing overwrites them on dedup. Returns a new array; inputs are untouched.
+// Used by useLoadOlderMessages — keep staleTime: Infinity semantics intact (only this prepends).
+export function prependChatMessages(existing: ChatMessageView[], older: ChatMessageView[]): ChatMessageView[] {
+  return dedupAndSort([...older, ...existing]);
 }
 
 // ChatMessageView extends ChatMessage with the view-only fields the chat page renders.

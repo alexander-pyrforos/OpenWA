@@ -426,6 +426,40 @@ async function requestText(endpoint: string): Promise<string> {
   return response.text();
 }
 
+/**
+ * Fetch the binary media payload for one persisted message —
+ * `GET /sessions/:sessionId/messages/:waMessageId/media`. The backend streams the raw bytes with a
+ * `Content-Type` matching the stored mimetype (cached in S3 on first download); 404 when no
+ * downloadable copy exists. Auth uses the same `X-API-Key` sessionStorage key as {@link request}, and
+ * mirrors its 401 handling (clear the key + bounce to login) so a revoked operator key doesn't leave
+ * the dashboard issuing failing media requests. Returns a Blob the caller can hand to
+ * `URL.createObjectURL` — revoke it when replaced/unmounted.
+ */
+export async function fetchMessageMedia(sessionId: string, waMessageId: string): Promise<Blob> {
+  const apiKey = sessionStorage.getItem('openwa_api_key');
+  const url = `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(
+    waMessageId,
+  )}/media`;
+  const response = await fetch(url, { headers: { ...(apiKey ? { 'X-API-Key': apiKey } : {}) } });
+
+  if (response.status === 401) {
+    sessionStorage.removeItem('openwa_api_key');
+    if (typeof window !== 'undefined') {
+      window.location.assign('/');
+      return new Promise<Blob>(() => {});
+    }
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    const err = new Error(error.message || `HTTP ${response.status}`) as Error & { status?: number };
+    err.status = response.status;
+    throw err;
+  }
+
+  return response.blob();
+}
+
 // =============================================================================
 // Session API
 // =============================================================================
@@ -462,9 +496,9 @@ export const sessionApi = {
       method: 'POST',
       body: JSON.stringify({ chatId }),
     }),
-  getChatMessages: (id: string, chatId: string, limit = 100) =>
+  getChatMessages: (id: string, chatId: string, limit = 100, offset = 0) =>
     request<{ messages: ChatMessage[]; total: number }>(
-      `/sessions/${id}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`,
+      `/sessions/${id}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}&offset=${offset}`,
     ),
   // Live history straight from WhatsApp (bypasses the DB) — backfills a thread the gateway never
   // captured, e.g. a freshly paired session whose persisted store is still empty.

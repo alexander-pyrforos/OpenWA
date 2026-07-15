@@ -85,7 +85,9 @@
       "callVideo": "视频通话",
       "callVideoMissed": "未接视频通话",
       "omitted": "媒体",
-      "image": "图片"
+      "image": "图片",
+      "loadMedia": "加载媒体",
+      "loadMediaFailed": "加载媒体失败"
     },
     "subtitle": "实时发送和回复 WhatsApp 消息",
     "noSessionsTitle": "没有已连接的会话",
@@ -99,6 +101,8 @@
     "loadingMessages": "正在加载消息...",
     "noMessagesInChat": "暂无消息。发送第一条消息即可开始！",
     "downloadDocument": "下载文档",
+    "loadOlder": "加载更早",
+    "loadingOlder": "加载中…",
     "actions": {
       "reply": "回复",
       "react": "回应",

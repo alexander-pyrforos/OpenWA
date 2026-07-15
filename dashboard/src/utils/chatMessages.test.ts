@@ -88,6 +88,7 @@ test('mergeChatMessages: returns ascending by timestamp (oldest first, newest la
 
 import {
   mergeOrAppend,
+  prependChatMessages,
   replaceMessageById,
   updateMessageById,
   removeMessageById,
@@ -196,4 +197,57 @@ test('removeMessageById is a no-op when id is not present', () => {
   const before = [msg({ id: 'm-1' })];
   const after = removeMessageById(before, 'missing');
   assert.deepEqual(after, before);
+});
+
+// --- prependChatMessages (B — load-older pagination) ---
+// Older DB rows are prepended onto the already-loaded slice; existing wins on conflict and the
+// result stays ascending by timestamp so the thread never reorders when paging back.
+
+test('prependChatMessages: prepends older rows before existing, ascending by timestamp', () => {
+  const existing = [msg({ id: 'm-2', timestamp: 2000 }), msg({ id: 'm-3', timestamp: 3000 })];
+  const older = [msg({ id: 'm-1', timestamp: 1000 })];
+  const after = prependChatMessages(existing, older);
+  assert.deepEqual(after.map(m => m.id), ['m-1', 'm-2', 'm-3']);
+});
+
+test('prependChatMessages: existing copy wins on conflict (same waMessageId) — keeps fresh status', () => {
+  const sameWa = 'true_g@g.us_WA1';
+  const existing = [msg({ id: 'uuid-1', waMessageId: sameWa, status: 'read', body: 'fresh' })];
+  const older = [msg({ id: sameWa, waMessageId: sameWa, status: 'sent', body: 'stale' })];
+  const after = prependChatMessages(existing, older);
+  assert.equal(after.length, 1); // deduped, not doubled
+  assert.equal(after[0].body, 'fresh'); // existing wins
+  assert.equal(after[0].status, 'read');
+});
+
+test('prependChatMessages: dedupes a DB row against its live WS copy by waMessageId ?? id', () => {
+  const dbCopy = msg({ id: 'uuid-1', waMessageId: 'true_g@g.us_WA1', body: 'persisted' });
+  const live = msg({ id: 'true_g@g.us_WA1', waMessageId: 'true_g@g.us_WA1', body: 'live' });
+  // Older page carries the DB copy; existing (already-loaded) carries the live copy — existing wins.
+  const after = prependChatMessages([live], [dbCopy]);
+  assert.equal(after.length, 1);
+  assert.equal(after[0].body, 'live');
+});
+
+test('prependChatMessages: does not mutate inputs', () => {
+  const existing = [msg({ id: 'm-2', timestamp: 2000 })];
+  const older = [msg({ id: 'm-1', timestamp: 1000 })];
+  const existingSnap = existing.slice();
+  const olderSnap = older.slice();
+  prependChatMessages(existing, older);
+  assert.deepEqual(existing, existingSnap);
+  assert.deepEqual(older, olderSnap);
+});
+
+test('prependChatMessages: returns ascending even when older is unordered', () => {
+  const existing = [msg({ id: 'm-3', timestamp: 3000 })];
+  const older = [msg({ id: 'm-2', timestamp: 2000 }), msg({ id: 'm-1', timestamp: 1000 })];
+  const after = prependChatMessages(existing, older);
+  assert.deepEqual(after.map(m => m.id), ['m-1', 'm-2', 'm-3']);
+});
+
+test('prependChatMessages: empty older returns existing unchanged (content + order)', () => {
+  const existing = [msg({ id: 'm-1', timestamp: 1000 }), msg({ id: 'm-2', timestamp: 2000 })];
+  const after = prependChatMessages(existing, []);
+  assert.deepEqual(after.map(m => m.id), ['m-1', 'm-2']);
 });

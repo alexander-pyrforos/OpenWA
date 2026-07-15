@@ -85,7 +85,9 @@
       "callVideo": "مكالمة فيديو",
       "callVideoMissed": "مكالمة فيديو فائتة",
       "omitted": "وسائط",
-      "image": "صورة"
+      "image": "صورة",
+      "loadMedia": "تحميل الوسائط",
+      "loadMediaFailed": "فشل تحميل الوسائط"
     },
     "subtitle": "أرسل ورد على رسائل واتساب في الوقت الفعلي",
     "noSessionsTitle": "لا توجد جلسات متصلة",
@@ -99,6 +101,8 @@
     "loadingMessages": "جارٍ تحميل الرسائل...",
     "noMessagesInChat": "لا توجد رسائل بعد. أرسل الرسالة الأولى للبدء!",
     "downloadDocument": "تنزيل المستند",
+    "loadOlder": "تحميل الأقدم",
+    "loadingOlder": "جارٍ التحميل…",
     "actions": {
       "reply": "رد",
       "react": "تفاعل",

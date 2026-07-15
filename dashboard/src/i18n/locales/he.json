@@ -85,7 +85,9 @@
       "callVideo": "שיחת וידאו",
       "callVideoMissed": "שיחת וידאו שלא נענתה",
       "omitted": "מדיה",
-      "image": "תמונה"
+      "image": "תמונה",
+      "loadMedia": "טען מדיה",
+      "loadMediaFailed": "טעינת מדיה נכשלה"
     },
     "subtitle": "שליחה ומענה להודעות WhatsApp בזמן אמת",
     "noSessionsTitle": "אין סשנים מחוברים",
@@ -99,6 +101,8 @@
     "loadingMessages": "טוען הודעות...",
     "noMessagesInChat": "אין הודעות עדיין. שלח את ההודעה הראשונה כדי להתחיל!",
     "downloadDocument": "הורדת מסמך",
+    "loadOlder": "טען ישנים יותר",
+    "loadingOlder": "טוען…",
     "actions": {
       "reply": "השב",
       "react": "תגובה",

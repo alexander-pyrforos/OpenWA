@@ -85,7 +85,9 @@
       "callVideo": "Videochiamata",
       "callVideoMissed": "Videochiamata persa",
       "omitted": "Media",
-      "image": "Immagine"
+      "image": "Immagine",
+      "loadMedia": "Carica media",
+      "loadMediaFailed": "Caricamento media non riuscito"
     },
     "subtitle": "Invia e rispondi ai messaggi WhatsApp in tempo reale",
     "noSessionsTitle": "Nessuna sessione connessa",
@@ -99,6 +101,8 @@
     "loadingMessages": "Caricamento messaggi...",
     "noMessagesInChat": "Ancora nessun messaggio. Invia il primo messaggio per iniziare!",
     "downloadDocument": "Scarica documento",
+    "loadOlder": "Carica precedenti",
+    "loadingOlder": "Caricamento…",
     "actions": {
       "reply": "Rispondi",
       "react": "Reagisci",

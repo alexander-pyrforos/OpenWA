@@ -85,7 +85,9 @@
       "callVideo": "영상 통화",
       "callVideoMissed": "부재중 영상 통화",
       "omitted": "미디어",
-      "image": "이미지"
+      "image": "이미지",
+      "loadMedia": "미디어 불러오기",
+      "loadMediaFailed": "미디어 불러오기 실패"
     },
     "subtitle": "실시간으로 WhatsApp 메시지를 보내고 답장하세요",
     "noSessionsTitle": "연결된 세션 없음",
@@ -99,6 +101,8 @@
     "loadingMessages": "메시지 불러오는 중...",
     "noMessagesInChat": "아직 메시지가 없습니다. 첫 메시지를 보내 대화를 시작하세요!",
     "downloadDocument": "문서 다운로드",
+    "loadOlder": "이전 불러오기",
+    "loadingOlder": "불러오는 중…",
     "actions": {
       "reply": "답장",
       "react": "반응",
