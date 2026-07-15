@@ -1,4 +1,5 @@
-import { Controller, Post, Get, Param, Body, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Query, HttpCode, HttpStatus, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { MessageService } from './message.service';
 import { BulkMessageService } from './bulk-message.service';
@@ -275,6 +276,26 @@ export class MessageController {
   async react(@Param('sessionId') sessionId: string, @Body() dto: ReactMessageDto): Promise<{ success: boolean }> {
     await this.messageService.reactToMessage(sessionId, dto);
     return { success: true };
+  }
+
+  // ========== On-demand history media (D2) ==========
+  // Declared BEFORE the `:chatId/history` and `:chatId/:messageId/reactions` routes so the static
+  // `/media` suffix isn't shadowed by the `:chatId` param routes — Nest matches in declaration order
+  // within the same controller. Media download mutates S3 + triggers a WhatsApp download, so it is
+  // gated with OPERATOR (the list GET above carries no role, but this is a write-ish action).
+  @Get(':waMessageId/media')
+  @RequireRole(ApiKeyRole.OPERATOR)
+  @ApiOperation({ summary: "Download a single message's media on demand (history/omitted), cached in S3" })
+  @ApiParam({ name: 'sessionId' })
+  @ApiParam({ name: 'waMessageId', description: 'WhatsApp message id' })
+  @ApiResponse({ status: 200, description: 'Media bytes (image/video/audio/document)' })
+  @ApiResponse({ status: 404, description: 'Message or downloadable media not found' })
+  async getMedia(
+    @Param('sessionId') sessionId: string,
+    @Param('waMessageId') waMessageId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    return this.messageService.getMedia(sessionId, waMessageId, res);
   }
 
   @Get(':chatId/history')

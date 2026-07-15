@@ -497,6 +497,13 @@ export interface IWhatsAppEngine {
   // Message Operations
   deleteMessage(chatId: string, messageId: string, forEveryone?: boolean): Promise<void>;
   getChatHistory(chatId: string, limit?: number, includeMedia?: boolean): Promise<IncomingMessage[]>;
+  /**
+   * Download a single message's media on demand (history/omitted media). Returns the raw bytes +
+   * mimetype/filename. Throws a NotFound-like error when no downloadable copy is available (no
+   * descriptor and not in the live store); lets download failures propagate. Unsupported engines
+   * throw via `unsupported(...)`.
+   */
+  downloadMediaByWaMessageId(waMessageId: string): Promise<{ data: Buffer; mimetype: string; filename?: string }>;
 
   // Contact Extended Operations
   getProfilePicture(contactId: string): Promise<string | null>;

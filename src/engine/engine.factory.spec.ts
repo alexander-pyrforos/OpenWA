@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { PluginLoaderService, PluginType } from '../core/plugins';
 import { BaileysMessageStoreService } from './adapters/baileys-message-store.service';
 import { LidMappingStoreService } from './identity/lid-mapping-store.service';
+import { MediaDescriptorService } from './adapters/media-descriptor.service';
 
 describe('EngineFactory', () => {
   const engineBlob = {
@@ -36,12 +37,21 @@ describe('EngineFactory', () => {
       remember: jest.fn().mockResolvedValue(undefined),
     }) as unknown as LidMappingStoreService;
 
+  const buildMediaDescriptorStore = (): MediaDescriptorService =>
+    ({ put: jest.fn(), getMessage: jest.fn() }) as unknown as MediaDescriptorService;
+
   it('refuses to create an engine for an unsafe session name (path-traversal into the auth dir)', () => {
     const createEngine = jest.fn().mockReturnValue({});
     const pluginLoader = {
       getPlugin: jest.fn().mockReturnValue({ instance: { type: PluginType.ENGINE, createEngine } }),
     } as unknown as PluginLoaderService;
-    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore(), buildLidStore());
+    const factory = new EngineFactory(
+      buildConfigService(),
+      pluginLoader,
+      buildMessageStore(),
+      buildLidStore(),
+      buildMediaDescriptorStore(),
+    );
 
     expect(() => factory.create({ sessionId: '../../etc', dbSessionId: 'db-1' })).toThrow(/unsafe session name/i);
     expect(() => factory.create({ sessionId: 'a/b', dbSessionId: 'db-1' })).toThrow(/unsafe session name/i);
@@ -55,7 +65,13 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn().mockReturnValue({ instance: pluginInstance }),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore(), buildLidStore());
+    const factory = new EngineFactory(
+      buildConfigService(),
+      pluginLoader,
+      buildMessageStore(),
+      buildLidStore(),
+      buildMediaDescriptorStore(),
+    );
     factory.create({ sessionId: 'sess-1', dbSessionId: 'db-1', proxyUrl: 'http://p', proxyType: 'http' });
 
     // Plain-object (not objectContaining) assertion: any browser key (headless/puppeteerArgs/
@@ -76,7 +92,13 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn(),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore(), buildLidStore());
+    const factory = new EngineFactory(
+      buildConfigService(),
+      pluginLoader,
+      buildMessageStore(),
+      buildLidStore(),
+      buildMediaDescriptorStore(),
+    );
     await factory.onModuleInit();
 
     expect(registerBuiltInPlugin).toHaveBeenCalledWith(
@@ -94,7 +116,13 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn(),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore(), buildLidStore());
+    const factory = new EngineFactory(
+      buildConfigService(),
+      pluginLoader,
+      buildMessageStore(),
+      buildLidStore(),
+      buildMediaDescriptorStore(),
+    );
     await factory.onModuleInit();
 
     const registeredIds = registerBuiltInPlugin.mock.calls.map(call => (call as [{ id: string }])[0].id);
@@ -107,7 +135,13 @@ describe('EngineFactory', () => {
       getPlugin: jest.fn().mockReturnValue(undefined),
     } as unknown as PluginLoaderService;
 
-    const factory = new EngineFactory(buildConfigService(), pluginLoader, buildMessageStore(), buildLidStore());
+    const factory = new EngineFactory(
+      buildConfigService(),
+      pluginLoader,
+      buildMessageStore(),
+      buildLidStore(),
+      buildMediaDescriptorStore(),
+    );
     expect(() => factory.create({ sessionId: 'sess-2', dbSessionId: 'db-2' })).not.toThrow();
   });
 
@@ -123,6 +157,7 @@ describe('EngineFactory', () => {
       pluginLoader,
       buildMessageStore(),
       buildLidStore(),
+      buildMediaDescriptorStore(),
     );
     expect(() => factory.create({ sessionId: 'sess-b', dbSessionId: 'db-b' })).toThrow(/baileys/i);
   });
@@ -149,6 +184,7 @@ describe('EngineFactory', () => {
         noPluginLoader(),
         buildMessageStore(),
         buildLidStore(),
+        buildMediaDescriptorStore(),
       );
       await factory.purgeSessionData('alice');
 
@@ -166,6 +202,7 @@ describe('EngineFactory', () => {
         noPluginLoader(),
         buildMessageStore(),
         buildLidStore(),
+        buildMediaDescriptorStore(),
       );
       await factory.purgeSessionData('bob');
 
@@ -178,6 +215,7 @@ describe('EngineFactory', () => {
         noPluginLoader(),
         buildMessageStore(),
         buildLidStore(),
+        buildMediaDescriptorStore(),
       );
       await expect(factory.purgeSessionData('never-linked')).resolves.toBeUndefined();
     });
@@ -193,6 +231,7 @@ describe('EngineFactory', () => {
         noPluginLoader(),
         buildMessageStore(),
         buildLidStore(),
+        buildMediaDescriptorStore(),
       );
       await factory.purgeSessionData('../baileys-evil');
 

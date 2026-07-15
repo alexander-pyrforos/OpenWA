@@ -10,6 +10,7 @@ import { BaileysPlugin } from '../plugins/engines/baileys';
 import { createLogger } from '../common/services/logger.service';
 import { BaileysMessageStoreService } from './adapters/baileys-message-store.service';
 import { LidMappingStoreService } from './identity/lid-mapping-store.service';
+import { MediaDescriptorService } from './adapters/media-descriptor.service';
 import { isSafeSessionName } from '../common/utils/path-safety';
 
 export interface EngineCreateOptions {
@@ -31,6 +32,7 @@ export class EngineFactory implements OnModuleInit {
     private readonly pluginLoader: PluginLoaderService,
     private readonly baileysMessageStore: BaileysMessageStoreService,
     private readonly lidMappingStore: LidMappingStoreService,
+    private readonly mediaDescriptorStore: MediaDescriptorService,
   ) {
     this.engineType = this.configService.get<string>('engine.type') ?? 'whatsapp-web.js';
   }
@@ -74,7 +76,7 @@ export class EngineFactory implements OnModuleInit {
     };
     this.pluginLoader.registerBuiltInPlugin(
       baileysManifest,
-      new BaileysPlugin(this.baileysMessageStore, engineConfig, this.lidMappingStore),
+      new BaileysPlugin(this.baileysMessageStore, engineConfig, this.lidMappingStore, this.mediaDescriptorStore),
       engineConfig,
     );
 

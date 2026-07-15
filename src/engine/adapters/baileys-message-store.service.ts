@@ -6,29 +6,11 @@ import type { WAMessage } from '@whiskeysockets/baileys';
 import { BaileysStoredMessage } from './baileys-stored-message.entity';
 import { BaileysMessageStore } from '../types/baileys.types';
 import { createLogger } from '../../common/services/logger.service';
+import { isMissingParentSessionError } from './orphan-session-error';
 
 function positiveIntFromEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? '', 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-/**
- * True when a write failed because the parent `sessions` row is absent (a foreign-key violation),
- * as opposed to any other persistence error. Covers SQLite (`SQLITE_CONSTRAINT[_FOREIGNKEY]`) and
- * Postgres (`23503`). TypeORM wraps the driver error in a QueryFailedError, so check both the
- * wrapper and `driverError`.
- */
-function isMissingParentSessionError(err: unknown): boolean {
-  const e = err as { code?: string; driverError?: { code?: string }; message?: string };
-  const code = e?.driverError?.code ?? e?.code;
-  if (code === '23503') {
-    return true; // Postgres foreign_key_violation
-  }
-  const message = e?.message ?? '';
-  if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) {
-    return code === 'SQLITE_CONSTRAINT_FOREIGNKEY' || /FOREIGN KEY/i.test(message);
-  }
-  return /FOREIGN KEY constraint failed/i.test(message);
 }
 
 @Injectable()

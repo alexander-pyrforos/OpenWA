@@ -6,7 +6,7 @@
 import { PluginContext, PluginType, IEnginePlugin } from '../../../core/plugins';
 import { IWhatsAppEngine } from '../../../engine/interfaces/whatsapp-engine.interface';
 import { BaileysAdapter } from '../../../engine/adapters/baileys.adapter';
-import { BaileysMessageStore } from '../../../engine/types/baileys.types';
+import { BaileysMessageStore, MediaDescriptorStore } from '../../../engine/types/baileys.types';
 import { LidMappingStore } from '../../../engine/identity/lid-mapping-store.service';
 
 export class BaileysPlugin implements IEnginePlugin {
@@ -20,6 +20,7 @@ export class BaileysPlugin implements IEnginePlugin {
     private readonly messageStore?: BaileysMessageStore,
     private readonly registeredConfig?: Record<string, unknown>,
     private readonly lidMappingStore?: LidMappingStore,
+    private readonly mediaDescriptorStore?: MediaDescriptorStore,
   ) {}
 
   onLoad(context: PluginContext): Promise<void> {
@@ -58,6 +59,7 @@ export class BaileysPlugin implements IEnginePlugin {
       proxyType,
       messageStore: this.messageStore,
       lidMappingStore: this.lidMappingStore,
+      mediaDescriptorStore: this.mediaDescriptorStore,
     });
   }
 

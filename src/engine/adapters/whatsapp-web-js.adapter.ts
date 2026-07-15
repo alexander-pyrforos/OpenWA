@@ -1886,6 +1886,19 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     throw new EngineNotSupportedError('sendCatalog');
   }
 
+  /**
+   * On-demand history media download is a Baileys-only feature (D1/D2): it relies on the
+   * non-evicting media-descriptor store + Baileys `downloadMediaMessage`. whatsapp-web.js has no
+   * equivalent downloadable descriptor, so the engine reports it as unsupported rather than
+   * silently returning null.
+   */
+  async downloadMediaByWaMessageId(
+    _waMessageId: string,
+  ): Promise<{ data: Buffer; mimetype: string; filename?: string }> {
+    this.ensureReady();
+    throw new EngineNotSupportedError('downloadMediaByWaMessageId');
+  }
+
   /* eslint-enable @typescript-eslint/require-await, @typescript-eslint/no-unused-vars */
 
   async getChats(): Promise<ChatSummary[]> {

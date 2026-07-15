@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import type { Response } from 'express';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BadRequestException, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
@@ -10,6 +11,9 @@ import { TemplateService } from '../template/template.service';
 import { Template } from '../template/entities/template.entity';
 import { SsrfBlockedError } from '../../common/security/ssrf-guard';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
+import { MediaDescriptorService } from '../../engine/adapters/media-descriptor.service';
+import { StorageService } from '../../common/storage/storage.service';
+import { MessageNotFoundError } from '../../common/errors/message-not-found.error';
 
 const mockEngineResult = { id: 'wa-msg-1', timestamp: 1706868000 };
 
@@ -31,6 +35,9 @@ function createMockEngine() {
     deleteMessage: jest.fn().mockResolvedValue(undefined),
     getChatHistory: jest.fn().mockResolvedValue([]),
     sendChatState: jest.fn().mockResolvedValue(undefined),
+    downloadMediaByWaMessageId: jest
+      .fn()
+      .mockResolvedValue({ data: Buffer.from('media-bytes'), mimetype: 'image/jpeg' }),
   };
 }
 
@@ -41,6 +48,8 @@ describe('MessageService', () => {
   let hookManager: jest.Mocked<Partial<HookManager>>;
   let templateService: jest.Mocked<Partial<TemplateService>>;
   let lidMappingStore: { lidsForPhone: jest.Mock };
+  let storageService: { getFile: jest.Mock; putFile: jest.Mock };
+  let findOne: jest.Mock;
   let mockEngine: ReturnType<typeof createMockEngine>;
 
   // Auto-typing is on by default; disable it for the unrelated send tests so they don't incur the
@@ -54,10 +63,11 @@ describe('MessageService', () => {
   });
 
   beforeEach(async () => {
+    findOne = jest.fn().mockResolvedValue(null);
     repository = {
       create: jest.fn().mockImplementation((data: Partial<Message>) => ({ id: 'msg-uuid-1', ...data }) as Message),
       save: jest.fn().mockImplementation(msg => Promise.resolve(msg)),
-      findOne: jest.fn().mockResolvedValue(null),
+      findOne,
       update: jest.fn().mockResolvedValue({ affected: 1 }),
       createQueryBuilder: jest.fn(),
     };
@@ -83,6 +93,11 @@ describe('MessageService', () => {
 
     lidMappingStore = { lidsForPhone: jest.fn().mockReturnValue([]) };
 
+    storageService = {
+      getFile: jest.fn().mockRejectedValue(new Error('not found')),
+      putFile: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MessageService,
@@ -91,6 +106,11 @@ describe('MessageService', () => {
         { provide: HookManager, useValue: hookManager },
         { provide: TemplateService, useValue: templateService },
         { provide: LidMappingStoreService, useValue: lidMappingStore },
+        { provide: StorageService, useValue: storageService },
+        {
+          provide: MediaDescriptorService,
+          useValue: { put: jest.fn(), getMessage: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile();
 
@@ -967,6 +987,97 @@ describe('MessageService', () => {
       });
 
       expect(mockEngine.deleteMessage).toHaveBeenCalledWith('test@c.us', 'wa-msg-1', false);
+    });
+  });
+
+  // ── getMedia (D2: on-demand history media + S3 cache) ────────────────
+
+  describe('getMedia (D2 on-demand history media)', () => {
+    /** Minimal Express Response stub: captures set headers + the sent body. */
+    const resMock = () => {
+      const headers: Record<string, string> = {};
+      let sent: unknown = undefined;
+      return {
+        setHeader: jest.fn().mockImplementation((k: string, v: string) => {
+          headers[k] = v;
+        }),
+        send: jest.fn().mockImplementation((b: unknown) => {
+          sent = b;
+        }),
+        headers,
+        sentBody: () => sent,
+      };
+    };
+
+    it('throws NotFound when the message row does not exist', async () => {
+      findOne.mockResolvedValueOnce(null);
+      const res = resMock();
+      await expect(service.getMedia('sess-1', 'NOPE', res as unknown as Response)).rejects.toThrow(/not found/i);
+    });
+
+    it('fast-paths inline base64 media (no WhatsApp round-trip, no S3 probe)', async () => {
+      findOne.mockResolvedValueOnce({
+        metadata: { media: { mimetype: 'image/png', data: Buffer.from('inline-bytes').toString('base64') } },
+      });
+      const res = resMock();
+      await service.getMedia('sess-1', 'wa-1', res as unknown as Response);
+      expect(mockEngine.downloadMediaByWaMessageId).not.toHaveBeenCalled();
+      expect(storageService.getFile).not.toHaveBeenCalled();
+      expect(res.headers['Content-Type']).toBe('image/png');
+      expect((res.sentBody() as Buffer).toString()).toBe('inline-bytes');
+    });
+
+    it('serves from S3 cache on a cache hit (no engine download)', async () => {
+      findOne.mockResolvedValueOnce({
+        metadata: { media: { mimetype: 'image/jpeg' /* no data -> cache path */ } },
+      });
+      storageService.getFile.mockResolvedValueOnce(Buffer.from('cached-bytes'));
+      const res = resMock();
+      await service.getMedia('sess-1', 'wa-2', res as unknown as Response);
+      expect(mockEngine.downloadMediaByWaMessageId).not.toHaveBeenCalled();
+      expect(storageService.putFile).not.toHaveBeenCalled();
+      expect(res.headers['Content-Type']).toBe('image/jpeg');
+      expect((res.sentBody() as Buffer).toString()).toBe('cached-bytes');
+    });
+
+    it('downloads via the engine on a cache miss and writes back to S3', async () => {
+      findOne.mockResolvedValueOnce({
+        metadata: { media: { mimetype: 'video/mp4' } },
+      });
+      // cache miss (default getFile rejects), engine returns bytes
+      mockEngine.downloadMediaByWaMessageId.mockResolvedValueOnce({
+        data: Buffer.from('video-bytes'),
+        mimetype: 'video/mp4',
+        filename: 'clip.mp4',
+      });
+      const res = resMock();
+      await service.getMedia('sess-1', 'wa-3', res as unknown as Response);
+      expect(mockEngine.downloadMediaByWaMessageId).toHaveBeenCalledWith('wa-3');
+      expect(storageService.putFile).toHaveBeenCalledWith('sess-1/wa-3.mp4', Buffer.from('video-bytes'));
+      expect(res.headers['Content-Type']).toBe('video/mp4');
+      expect(res.headers['Content-Disposition']).toContain('clip.mp4');
+      expect((res.sentBody() as Buffer).toString()).toBe('video-bytes');
+    });
+
+    it('maps a MessageNotFoundError from the engine to NotFound (404)', async () => {
+      findOne.mockResolvedValueOnce({ metadata: {} });
+      mockEngine.downloadMediaByWaMessageId.mockRejectedValueOnce(new MessageNotFoundError('wa-4'));
+      const res = resMock();
+      await expect(service.getMedia('sess-1', 'wa-4', res as unknown as Response)).rejects.toThrow(/not found/i);
+    });
+
+    it('still streams the bytes when the S3 cache write fails (best-effort write)', async () => {
+      findOne.mockResolvedValueOnce({
+        metadata: { media: { mimetype: 'image/jpeg' } },
+      });
+      mockEngine.downloadMediaByWaMessageId.mockResolvedValueOnce({
+        data: Buffer.from('dl-bytes'),
+        mimetype: 'image/jpeg',
+      });
+      storageService.putFile.mockRejectedValueOnce(new Error('S3 down'));
+      const res = resMock();
+      await service.getMedia('sess-1', 'wa-5', res as unknown as Response);
+      expect((res.sentBody() as Buffer).toString()).toBe('dl-bytes');
     });
   });
 });

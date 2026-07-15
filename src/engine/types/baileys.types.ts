@@ -15,6 +15,18 @@ export interface BaileysMessageStore {
 }
 
 /**
+ * Persistence boundary for the non-evicting media-descriptor store (D1). Holds the FULL serialized
+ * WAMessage for media-bearing history-sync messages so `downloadMediaMessage` can fetch the media
+ * on demand. Narrow interface (not the concrete Nest service) so the adapter stays unit-testable.
+ */
+export interface MediaDescriptorStore {
+  /** Persist (idempotent on the same id) the downloadable copy of a media-bearing history message. */
+  put(sessionId: string, waMessageId: string, msg: WAMessage): Promise<void>;
+  /** Look up a previously-stored downloadable copy by id, or null. */
+  getMessage(sessionId: string, waMessageId: string): Promise<WAMessage | null>;
+}
+
+/**
  * Per-call construction config for {@link BaileysAdapter}. Engine-neutral fields come from the
  * factory; `authDir` is the base multi-file auth directory from the opaque `engine.baileys.*` blob
  * (the adapter appends the session id to isolate each session).
@@ -31,6 +43,8 @@ export interface BaileysAdapterConfig {
   messageStore?: BaileysMessageStore;
   /** Persisted, cross-session lid->phone resolution table. Backs lid resolution beyond the in-memory map. */
   lidMappingStore?: LidMappingStore;
+  /** Non-evicting store of media-bearing history-sync messages; backs on-demand history media download. */
+  mediaDescriptorStore?: MediaDescriptorStore;
 }
 
 /**

@@ -55,6 +55,21 @@ import {
 } from './inbound-media-cap';
 import { ConcurrencyLimiter } from '../../common/utils/concurrency-limiter';
 
+/**
+ * The set of content types that carry a downloadable media blob. Shared by the live `mapMessage`
+ * path (inbound media download) and the history `mapHistoryMessage`/`isMediaHistoryMessage` path
+ * (D1 descriptor capture) so the two never drift apart — a media type captured for on-demand
+ * download is exactly the set the live path would have downloaded.
+ */
+const MEDIA_CONTENT_TYPES = new Set([
+  'imageMessage',
+  'videoMessage',
+  'audioMessage',
+  'documentMessage',
+  'documentWithCaptionMessage',
+  'stickerMessage',
+]);
+
 /** Linked-device identity shown in WhatsApp (Settings → Linked Devices). */
 const BAILEYS_BROWSER: [string, string, string] = ['OpenWA', 'Chrome', '120.0.0'];
 
@@ -1227,13 +1242,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
 
     // --- media (image / video / audio / document / sticker) ---
     let media: IncomingMessage['media'];
-    const isMediaType =
-      contentType === 'imageMessage' ||
-      contentType === 'videoMessage' ||
-      contentType === 'audioMessage' ||
-      contentType === 'documentMessage' ||
-      contentType === 'documentWithCaptionMessage' ||
-      contentType === 'stickerMessage';
+    const isMediaType = !!contentType && MEDIA_CONTENT_TYPES.has(contentType);
     if (isMediaType) {
       // The outbound "sent" echo passes skipMediaDownload: the sender already holds the media, and for
       // parity with the wwjs message.sent (which carries no media buffer) we emit only the marker here.
@@ -1401,6 +1410,17 @@ export class BaileysAdapter implements IWhatsAppEngine {
       if (incoming) {
         mapped.push(incoming);
       }
+      // D1: persist a downloadable copy of media-bearing history messages (best-effort, never
+      // throws on the history hot path). The descriptor store is non-evicting, so the oldest media
+      // stays retrievable for on-demand download — unlike the live message store's FIFO cap.
+      if (this.isMediaHistoryMessage(b, msg)) {
+        void this.config.mediaDescriptorStore?.put(this.config.dbSessionId, msg.key?.id ?? '', msg).catch(err =>
+          this.logger.warn('Failed to persist history media descriptor', {
+            error: err instanceof Error ? err.message : String(err),
+            msgId: msg.key?.id,
+          }),
+        );
+      }
     }
     if (nameUpdates.length) {
       this.sessionStore.upsertContacts(nameUpdates);
@@ -1444,6 +1464,11 @@ export class BaileysAdapter implements IWhatsAppEngine {
    * Media-free WAMessage -> IncomingMessage map for bulk history (downloading media for thousands of
    * messages would be ruinous; the type is kept, the payload dropped). Returns null for protocol /
    * reaction / key / empty messages, which carry nothing for the chat view.
+   *
+   * For media-bearing messages, emits an `omitted` marker (`media: { mimetype, filename?, omitted: true,
+   * sizeBytes? }`) so the dashboard can render a click-to-load placeholder. The full downloadable
+   * descriptor is persisted separately (D1, in `captureHistoryMessages`) — the marker here carries only
+   * the cheap metadata, so the hot `getMessages` list path stays unbloated.
    */
   private mapHistoryMessage(b: typeof BaileysLib, msg: WAMessage): IncomingMessage | null {
     const raw = msg.message;
@@ -1465,6 +1490,26 @@ export class BaileysAdapter implements IWhatsAppEngine {
       return null;
     }
     const body = extractBaileysBody(content);
+
+    // Omitted-media marker (D3 placeholder contract): mirror the live omitted-marker extraction at
+    // :1243-1255 / :1266-1267. mimetype/filename/declared-size are available pre-download from the
+    // message content; nothing is downloaded here.
+    let media: IncomingMessage['media'];
+    if (contentType && MEDIA_CONTENT_TYPES.has(contentType)) {
+      const subMessage =
+        content.imageMessage ??
+        content.videoMessage ??
+        content.audioMessage ??
+        content.documentMessage ??
+        content.stickerMessage;
+      media = {
+        mimetype: subMessage?.mimetype ?? '',
+        filename: content.documentMessage?.fileName ?? undefined,
+        omitted: true,
+        sizeBytes: coerceDeclaredSize(subMessage?.fileLength),
+      };
+    }
+
     return buildIncomingMessageFromBaileys(
       {
         id: msg.key.id,
@@ -1477,6 +1522,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
         timestamp: this.toUnixSeconds(msg.messageTimestamp),
         pushName: msg.pushName ?? undefined,
         selfJid: this.normalizedSelfJid(),
+        media,
         // Populate the disappearing-messages timer using the same extraction the live path and the
         // session-store cache share (`msg.ephemeralDuration` primary, `contextInfo.expiration` fallback),
         // so the history sink can apply the STORE_EPHEMERAL_MESSAGES opt-out symmetrically with onMessage.
@@ -1484,6 +1530,21 @@ export class BaileysAdapter implements IWhatsAppEngine {
       },
       jid => this.sessionStore.toNeutralJid(jid),
     );
+  }
+
+  /**
+   * True when a history-sync WAMessage carries a downloadable media blob (image/video/audio/document/
+   * sticker). Normalizes the content first so wrappers (ephemeral/viewOnce/documentWithCaption/edited)
+   * are unwrapped — the same normalization `mapHistoryMessage` performs. Shares the
+   * {@link MEDIA_CONTENT_TYPES} set with the live `mapMessage` path so the two never drift.
+   */
+  private isMediaHistoryMessage(b: typeof BaileysLib, msg: WAMessage): boolean {
+    if (!msg.message) {
+      return false;
+    }
+    const content = b.normalizeMessageContent(msg.message) ?? msg.message;
+    const contentType = b.getContentType(content);
+    return !!contentType && MEDIA_CONTENT_TYPES.has(contentType);
   }
 
   private normalizedSelfJid(): string {
@@ -1608,6 +1669,51 @@ export class BaileysAdapter implements IWhatsAppEngine {
       throw new MessageNotFoundError(messageId);
     }
     return found;
+  }
+
+  /**
+   * Download a single message's media on demand (history/omitted media; D2). Resolves the message
+   * from the non-evicting media-descriptor store (D1) first, then falls back to the live message
+   * store — the latter covers a live-omitted message (MEDIA_DOWNLOAD_ENABLED=false) whose
+   * descriptor was never captured because it wasn't history. Throws {@link MessageNotFoundError}
+   * when no downloadable copy is available, and lets download failures propagate. No concurrency
+   * guard: the endpoint is per-click, low rate.
+   */
+  async downloadMediaByWaMessageId(
+    waMessageId: string,
+  ): Promise<{ data: Buffer; mimetype: string; filename?: string }> {
+    this.ensureReady();
+    // 1) history descriptor store (D1) — non-evicting, holds the full downloadable WAMessage.
+    let msg = (await this.config.mediaDescriptorStore?.getMessage(this.config.dbSessionId, waMessageId)) ?? null;
+    // 2) live message store fallback — covers MEDIA_DOWNLOAD_ENABLED=false live omitted media, whose
+    //    descriptor was never captured (it isn't history, so captureHistoryMessages never ran).
+    if (!msg) {
+      msg = (await this.config.messageStore?.getMessage(this.config.dbSessionId, waMessageId)) ?? null;
+    }
+    if (!msg?.key || !msg.message) {
+      throw new MessageNotFoundError(waMessageId);
+    }
+    const b = await this.loadLib();
+    const content = b.normalizeMessageContent(msg.message) ?? msg.message;
+    const sub =
+      content.imageMessage ??
+      content.videoMessage ??
+      content.audioMessage ??
+      content.documentMessage ??
+      content.stickerMessage;
+    if (!sub) {
+      throw new MessageNotFoundError(waMessageId); // not a media message — nothing to download
+    }
+    const mimetype = sub.mimetype ?? '';
+    const filename = content.documentMessage?.fileName ?? undefined;
+    const maxBytes = inboundMediaMaxBytes();
+    // Reuse the same capped stream downloader the live path uses (:1159) — byte-cap abort + timeout
+    // apply identically to an on-demand history download.
+    const buf = await this.downloadInboundMediaCapped(msg, maxBytes);
+    if (!buf) {
+      throw new Error('Media download aborted (over cap or timed out)');
+    }
+    return { data: buf, mimetype, filename };
   }
 
   /**

@@ -1,7 +1,8 @@
-import { Injectable, BadRequestException, Optional } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Response } from 'express';
 import { SessionService } from '../session/session.service';
 import { SendTextMessageDto, SendMediaMessageDto, SendAudioMessageDto, MessageResponseDto } from './dto';
 import { SendTemplateMessageDto } from './dto/send-template.dto';
@@ -16,6 +17,9 @@ import { SsrfBlockedError, SSRF_BLOCKED_CLIENT_MESSAGE } from '../../common/secu
 import { userPart } from '../../engine/identity/wa-id';
 import { resolveFeatureFlags } from '../../config/feature-flags';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
+import { MediaDescriptorService } from '../../engine/adapters/media-descriptor.service';
+import { StorageService } from '../../common/storage/storage.service';
+import { MessageNotFoundError } from '../../common/errors/message-not-found.error';
 
 export interface GetMessagesOptions {
   chatId?: string;
@@ -51,6 +55,8 @@ export class MessageService {
     private readonly hookManager: HookManager,
     private readonly templateService: TemplateService,
     private readonly lidMappingStore: LidMappingStoreService,
+    private readonly storageService: StorageService,
+    private readonly mediaDescriptorStore: MediaDescriptorService,
     @Optional()
     private readonly configService?: ConfigService,
   ) {}
@@ -615,6 +621,86 @@ export class MessageService {
     return engine.getChatHistory(chatId, safeLimit, deep ? false : includeMedia);
   }
 
+  // ========== On-demand history media (D2) ==========
+
+  /**
+   * Stream a single message's media on demand, with an S3/MinIO cache. Resolution order:
+   *   1. Inline base64 fast path — a live message whose media was persisted inline (no WhatsApp
+   *      round-trip, no S3 probe). Decoded and streamed directly.
+   *   2. S3 cache hit — the media was downloaded on a prior call and cached under
+   *      `${sessionId}/${waMessageId}.${ext}`. Streamed from storage.
+   *   3. Download via the engine (`downloadMediaByWaMessageId`), which resolves the descriptor
+   *      store (D1) then the live message store, then streams the decrypted bytes. The result is
+   *      best-effort written back to S3 so subsequent calls hit #2.
+   *
+   * `MessageNotFoundError` from the engine maps to HTTP 404; other download failures propagate.
+   * We do NOT persist `metadata.media.s3Key` back to the message row for v1 — the endpoint probes S3
+   * on every call, which keeps the hot `getMessages` list path unbloated and avoids a metadata
+   * round-trip per download (see brief D2 step 5).
+   */
+  async getMedia(sessionId: string, waMessageId: string, res: Response): Promise<void> {
+    const row = await this.messageRepository.findOne({ where: { sessionId, waMessageId } });
+    if (!row) {
+      throw new NotFoundException(`Message ${waMessageId} not found`);
+    }
+
+    const meta = (row.metadata as { media?: { data?: string; mimetype?: string } } | undefined)?.media;
+
+    // 1) Inline base64 fast path — a live message persisted with its media inline. No WhatsApp
+    //    round-trip and no S3 probe: decode and stream directly.
+    if (meta?.data) {
+      const buf = Buffer.from(meta.data, 'base64');
+      const mimetype = meta.mimetype ?? 'application/octet-stream';
+      const ext = mimetypeExtension(mimetype);
+      res.setHeader('Content-Type', mimetype);
+      res.setHeader('Content-Disposition', `inline; filename="${waMessageId}.${ext}"`);
+      res.send(buf);
+      return;
+    }
+
+    // 2) S3 cache probe. A miss throws (file not found) — fall through to download.
+    const mimetypeHint = meta?.mimetype ?? 'application/octet-stream';
+    const ext = mimetypeExtension(mimetypeHint);
+    const key = `${sessionId}/${waMessageId}.${ext}`;
+    try {
+      const cached = await this.storageService.getFile(key);
+      res.setHeader('Content-Type', mimetypeHint);
+      res.setHeader('Content-Disposition', `inline; filename="${waMessageId}.${ext}"`);
+      res.send(cached);
+      return;
+    } catch {
+      // cache miss (NoSuchKey / file not found) — fall through to download
+    }
+
+    // 3) Download on demand via the engine. MessageNotFoundError -> HTTP 404; other failures
+    //    propagate as a 500 (genuine download error).
+    const engine = this.getEngine(sessionId);
+    let downloaded: { data: Buffer; mimetype: string; filename?: string };
+    try {
+      downloaded = await engine.downloadMediaByWaMessageId(waMessageId);
+    } catch (err) {
+      if (err instanceof MessageNotFoundError) {
+        throw new NotFoundException(`Downloadable media for message ${waMessageId} not found`);
+      }
+      throw err;
+    }
+
+    // Best-effort S3 cache write — a failure here must NOT fail the response; the bytes are already
+    // in hand and streamed below, and the next call will simply re-download.
+    await this.storageService.putFile(key, downloaded.data).catch(err =>
+      this.logger.warn('Failed to cache history media in S3', {
+        error: err instanceof Error ? err.message : String(err),
+        key,
+      }),
+    );
+
+    const outExt = mimetypeExtension(downloaded.mimetype);
+    const filename = downloaded.filename ?? `${waMessageId}.${outExt}`;
+    res.setHeader('Content-Type', downloaded.mimetype);
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.send(downloaded.data);
+  }
+
   // ========== Delete Message ==========
 
   async deleteMessage(
@@ -701,5 +787,47 @@ export class MessageService {
       caption: dto.caption,
       mentions: dto.mentions,
     };
+  }
+}
+
+/**
+ * Map a mimetype to a file extension for the on-demand media cache key + Content-Disposition
+ * filename. Covers only the types WhatsApp sends; unknown types fall back to `bin`. Kept tiny and
+ * local — this is a cache-key hint, not a authoritative mime registry.
+ */
+function mimetypeExtension(mimetype: string): string {
+  const m = (mimetype ?? '').toLowerCase().split(';')[0].trim();
+  switch (m) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'video/mp4':
+      return 'mp4';
+    case 'video/3gpp':
+      return '3gp';
+    case 'audio/ogg':
+      return 'ogg';
+    case 'audio/mpeg':
+      return 'mp3';
+    case 'audio/mp4':
+    case 'audio/m4a':
+      return 'm4a';
+    case 'audio/aac':
+      return 'aac';
+    case 'application/pdf':
+      return 'pdf';
+    case 'application/octet-stream':
+      return 'bin';
+    default:
+      // A vendor/unknown type (e.g. `application/vnd.openxmlformats…`): fall back to `bin` so the
+      // cache key stays a single safe extension, and the dashboard re-derives the display name from
+      // the stored mimetype.
+      return 'bin';
   }
 }
