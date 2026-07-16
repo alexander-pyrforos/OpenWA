@@ -176,6 +176,14 @@ export interface ChatMessage {
     quotedMessage?: { id: string; body: string };
     reactions?: Record<string, string>;
     call?: { video: boolean; missed: boolean };
+    // Per-sender info persisted by the backend (in `metadata` to avoid a DB migration). `from` is the
+    // *chat* JID for group messages, so the actual sender (`author`) and resolved contact/phone are
+    // needed to render the author name/phone on history rows. `contact` mirrors the engine's
+    // best-effort WhatsApp contact cache (pushName, name, number, etc).
+    author?: string;
+    isGroup?: boolean;
+    contact?: { id?: string; number?: string; name?: string; pushName?: string; shortName?: string };
+    senderPhone?: string | null;
   };
 }
 
@@ -352,6 +360,13 @@ export interface SearchHit {
   /** Meilisearch _formatted body (may carry <mark> tags). Absent from the built-in FTS provider. */
   _formatted?: { body?: string };
   score?: number;
+  /** Character offset of the first occurrence of the query in `body` (0-indexed code-unit index in
+   *  the JS string). Backend-computed via a case-insensitive substring search so the dashboard can
+   *  scroll the renderer to the matched line and highlight the exact substring. `-1` when the
+   *  body is empty or the query can't be located verbatim. */
+  matchStart: number;
+  /** Length of the matched substring (code-units). `-1` when `matchStart` is `-1`. */
+  matchLength: number;
 }
 
 export interface SearchResults {
@@ -513,12 +528,25 @@ export const sessionApi = {
   // captured, e.g. a freshly paired session whose persisted store is still empty.
   // includeMedia downloads the media payload (base64) for history messages so stickers/images/
   // video/voice render instead of collapsing to an empty timestamp-only bubble.
-  getChatHistory: (id: string, chatId: string, limit = 100, includeMedia = false) =>
-    request<EngineHistoryMessage[]>(
-      `/sessions/${id}/messages/${encodeURIComponent(chatId)}/history?limit=${limit}${
-        includeMedia ? '&includeMedia=true' : ''
-      }`,
-    ),
+  //
+  // Under Baileys the engine has no on-demand history endpoint (it always returns 501), so a 501 here
+  // is NOT an error — it's the engine telling us "use the DB path only". We swallow the 501 to keep
+  // the network tab clean and the caller's allSettled path simple; other failures (5xx, network) still
+  // throw so genuine problems are visible.
+  getChatHistory: async (id: string, chatId: string, limit = 100, includeMedia = false) => {
+    try {
+      return await request<EngineHistoryMessage[]>(
+        `/sessions/${id}/messages/${encodeURIComponent(chatId)}/history?limit=${limit}${
+          includeMedia ? '&includeMedia=true' : ''
+        }`,
+      );
+    } catch (err) {
+      if (err && typeof err === 'object' && 'status' in err && (err as { status: number }).status === 501) {
+        return [] as EngineHistoryMessage[];
+      }
+      throw err;
+    }
+  },
 };
 
 // =============================================================================

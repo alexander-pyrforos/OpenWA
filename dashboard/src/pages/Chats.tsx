@@ -44,6 +44,7 @@ import {
 import { useChatScrollPosition } from '../hooks/useChatScrollPosition';
 import MessageBody from '../components/chats/MessageBody';
 import MediaLightbox, { type LightboxItem } from '../components/chats/MediaLightbox';
+import { highlightSearchMatch, clearSearchHighlights } from '../utils/highlightSearchHit';
 import './Chats.css';
 
 type MessageMedia = { mimetype: string; filename?: string; data?: string; omitted?: boolean; sizeBytes?: number };
@@ -60,6 +61,10 @@ interface IncomingWsMessage {
   type: string;
   timestamp: number;
   fromMe?: boolean;
+  author?: string;
+  isGroup?: boolean;
+  contact?: { id?: string; number?: string; name?: string; pushName?: string; shortName?: string };
+  senderPhone?: string | null;
   media?: MessageMedia;
   quotedMessage?: { id: string; body: string };
   // The backend emits `call` as a top-level field on the live `message.received` event (it's only
@@ -107,6 +112,11 @@ export function Chats() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [loadingChats, setLoadingChats] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  // Sidebar search mode: 'chats' filters the chat list by name/id; 'messages' swaps the chat list for
+  // GlobalSearch results. The component lives inside the sidebar so its results scroll in the same
+  // region as the chat list — its CSS assumes a `flex:1` sibling slot and inflates the page header
+  // when mounted there instead.
+  const [searchMode, setSearchMode] = useState<'chats' | 'messages'>('chats');
 
   // Selected chat & message history
   const [activeChat, setActiveChat] = useState<Chat | null>(null);
@@ -300,10 +310,17 @@ export function Chats() {
         status: 'sent',
         timestamp: newMsg.timestamp,
         createdAt: new Date(newMsg.timestamp * 1000).toISOString(),
-        metadata: newMsg.metadata || {
-          media: newMsg.media,
-          quotedMessage: newMsg.quotedMessage,
-          call: newMsg.call,
+        metadata: {
+          ...(newMsg.metadata || {}),
+          media: newMsg.metadata?.media ?? newMsg.media,
+          quotedMessage: newMsg.metadata?.quotedMessage ?? newMsg.quotedMessage,
+          call: newMsg.metadata?.call ?? newMsg.call,
+          // Carry per-sender info from the WS payload so the bubble can render author name/phone.
+          // For groups `from` is the *chat* JID, not the sender — `author` carries the real sender.
+          author: newMsg.author,
+          isGroup: newMsg.isGroup,
+          contact: newMsg.contact,
+          senderPhone: newMsg.senderPhone,
         },
       };
 
@@ -549,55 +566,24 @@ export function Chats() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChat?.id, markChatRead]);
 
-  // --- Global search: jump to a hit's chat (and best-effort scroll to the message) ---
-  // A cross-session hit switches session, which asynchronously reloads the chats list — so the
-  // target chat may not be available at click time. pendingHitRef carries the intent across that
-  // async gap: the chat-select effect picks it up once the list lands, and the scroll effect runs
-  // once the messages have rendered.
-  const pendingHitRef = useRef<{ chatId: string; waMessageId: string } | null>(null);
-
-  const handleSearchHit = useCallback(
-    (hit: SearchHit) => {
-      pendingHitRef.current = { chatId: hit.chatId, waMessageId: hit.waMessageId };
-      if (hit.sessionId !== selectedSessionId) {
-        // Switching session triggers loadChats; the effect below selects the chat once the list lands.
-        setSelectedSessionId(hit.sessionId);
-      } else {
-        const chat = chats.find(c => c.id === hit.chatId);
-        if (chat) setActiveChat(chat);
-        else pendingHitRef.current = null;
-      }
-    },
-    [selectedSessionId, chats],
-  );
-
-  // After a session switch the chats list reloads — pick up the pending chat once it appears.
-  useEffect(() => {
-    const pending = pendingHitRef.current;
-    if (!pending || activeChat?.id === pending.chatId) return;
-    const chat = chats.find(c => c.id === pending.chatId);
-    if (chat) setActiveChat(chat);
-  }, [chats, activeChat]);
-
-  // Best-effort scroll to the hit message. Runs as a layout effect (after useChatScrollPosition's
-  // own restore on the same commit) so it overrides the bottom/saved jump with no visible flash.
-  // Degrades silently to session+chat selection when the element isn't present — the message is
-  // still visible in the conversation.
-  useLayoutEffect(() => {
-    const pending = pendingHitRef.current;
-    if (!pending || !activeChat || activeChat.id !== pending.chatId) return;
-    if (loadingMessages || messages.length === 0) return;
-    const container = messagesContainerRef.current;
-    if (container) {
-      try {
-        const el = container.querySelector(`[data-wa-message-id="${pending.waMessageId}"]`);
-        if (el instanceof HTMLElement) el.scrollIntoView({ block: 'center' });
-      } catch {
-        // Unexpected chars in the id made the selector invalid — ignore.
-      }
-    }
-    pendingHitRef.current = null;
-  }, [activeChat, loadingMessages, messages, messagesContainerRef]);
+  // --- Global search: jump to a hit's chat + scroll to the message + highlight it ---
+  // searchHitTarget carries the intent across the multi-step async flow:
+  //   1. cross-session hit → setSelectedSessionId reloads chats list (effect 1 picks the chat)
+  //   2. messages may not include the hit's waMessageId yet (the first 100 don't always cover it)
+  //      → the resolver effect triggers useLoadOlderMessages, which prepends pages one at a time
+  //      → re-runs on every messages change until the hit is in the slice, then scrolls + highlights
+  //   3. if even the full DB history has no match (race with retention, deleted, etc.) we give up
+  //      gracefully — the user is still in the right chat.
+  // `highlightedHitId` is a separate state because the highlight only applies after the DOM element
+  // actually exists and we want the visual class to outlive the scroll effect (CSS animation fades it).
+  const [searchHitTarget, setSearchHitTarget] = useState<{
+    chatId: string;
+    waMessageId: string;
+    matchStart: number;
+    matchLength: number;
+  } | null>(null);
+  const [highlightedHitId, setHighlightedHitId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- Load-older scroll anchor (B) ---
   // Prepending older messages grows scrollHeight above the viewport; without anchoring, the view
@@ -607,16 +593,230 @@ export function Chats() {
   // scrollTop by that delta so the viewport stays on the same content. The "first message changed"
   // check distinguishes a real prepend from a failed load or a bottom WS append (which don't move the
   // first message), so this never disturbs useChatScrollPosition's restore or onMessageAppended.
+  // Shared between the user-driven "Load older" path and the search-jump auto-load-older path —
+  // the search-jump path sets `forSearchJump` so the anchor effect skips the scroll restoration
+  // (it will scroll to the hit via scrollIntoView instead).
   const prependAnchorRef = useRef<{
     firstEl: HTMLElement | null;
     firstTop: number;
     prevScrollTop: number;
+    forSearchJump: boolean;
   } | null>(null);
 
+  const handleSearchHit = useCallback(
+    (hit: SearchHit) => {
+      // Reset any prior highlight before starting the new jump.
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+      setHighlightedHitId(null);
+      // matchStart/length tell the resolver where in `body` the matched substring lives so it can
+      // scroll to the exact line + wrap it in <mark>. The built-in FTS provider always populates
+      // them; an older plugin or a stemming match that the body doesn't contain verbatim yields
+      // (-1, -1) and the resolver falls back to the whole-message scroll + message-level highlight.
+      setSearchHitTarget({
+        chatId: hit.chatId,
+        waMessageId: hit.waMessageId,
+        matchStart: hit.matchStart,
+        matchLength: hit.matchLength,
+      });
+      if (hit.sessionId !== selectedSessionId) {
+        // Switching session triggers loadChats; the effect below selects the chat once the list lands.
+        setSelectedSessionId(hit.sessionId);
+      } else {
+        const chat = chats.find(c => c.id === hit.chatId);
+        if (chat) setActiveChat(chat);
+        // If the chat isn't in the list yet, the post-chats effect will pick it up.
+      }
+    },
+    [selectedSessionId, chats],
+  );
+
+  // After a session switch (or first mount) the chats list reloads — pick up the pending chat once it
+  // appears. Once active, scroll-into-view kicks in (next effect).
+  useEffect(() => {
+    const target = searchHitTarget;
+    if (!target || activeChat?.id === target.chatId) return;
+    const chat = chats.find(c => c.id === target.chatId);
+    if (chat) setActiveChat(chat);
+  }, [chats, activeChat, searchHitTarget]);
+
+  // Scroll-into-view + auto-load-older resolver. Runs whenever the active chat, its messages, or the
+  // total change, and keeps loading older pages until the hit is in the slice or we exhaust the DB.
+  // Safety cap (LOAD_OLDER_MAX_PAGES) prevents a runaway if the hit's waMessageId is wrong or the row
+  // was deleted. Uses the same scroll-anchor ref the manual "Load older" path uses, so each prepend
+  // preserves the user's current scroll position when they're not searching.
+  //
+  // Note: `selectedSessionId` and `activeChat?.id` are guaranteed non-null at this point — the
+  // effect's first two guards (`!activeChat`, `activeChat.id !== target.chatId`) ensure the right
+  // chat is active. We coerce to assert that to the TS checker without changing behavior.
+  const LOAD_OLDER_MAX_PAGES = 20;
+  const loadedOlderPagesRef = useRef(0);
+  // Destructure mutate + isPending from the mutation hook so the effect's deps are stable; depending
+  // on the whole object (which has a new identity every render) would re-fire the effect every render
+  // and create a mutation loop. Renamed to loadOlderForSearch to avoid colliding with the user-driven
+  // "Load older" mutation defined above.
+  const sessionIdForSearch = activeChat ? selectedSessionId : '';
+  const chatIdForSearch = activeChat?.id ?? '';
+  const { mutate: loadOlderForSearch, isPending: loadOlderForSearchPending } = useLoadOlderMessages(
+    sessionIdForSearch,
+    chatIdForSearch,
+  );
+  useLayoutEffect(() => {
+    const target = searchHitTarget;
+    if (!target || !activeChat || activeChat.id !== target.chatId) return;
+    if (loadingMessages || messages.length === 0) return;
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const found = messages.find(m => m.waMessageId === target.waMessageId);
+    if (!found) {
+      // Not in the loaded slice. Load another older page if we still have rows in the DB and haven't
+      // hit the cap. Snapshot the scroll anchor BEFORE the prepend runs, so the position is preserved
+      // when the hit is still not on-screen (otherwise the page jumps to the bottom of the new oldest
+      // row, and we'd never see the hit even after more pages load).
+      if (loadOlderForSearchPending) return;
+      if (loadedOlderPagesRef.current >= LOAD_OLDER_MAX_PAGES) {
+        // Give up: DB doesn't have it, or it's been too long. Clear the target so we stop retrying.
+        setSearchHitTarget(null);
+        loadedOlderPagesRef.current = 0;
+        return;
+      }
+      if (messages.length < (total || 0)) {
+        loadedOlderPagesRef.current += 1;
+        const anchor = messagesContainerRef.current?.querySelector<HTMLElement>('.message-bubble-wrapper');
+        if (anchor) {
+          prependAnchorRef.current = {
+            firstEl: anchor,
+            firstTop: anchor.offsetTop,
+            prevScrollTop: messagesContainerRef.current!.scrollTop,
+            // Flag so the manual anchor effect below skips its scroll restoration — the resolver
+            // will scroll to the hit via scrollIntoView on the next render instead.
+            forSearchJump: true,
+          };
+        }
+        loadOlderForSearch(messages.length);
+      } else {
+        // No more rows to load — give up gracefully.
+        setSearchHitTarget(null);
+        loadedOlderPagesRef.current = 0;
+      }
+      return;
+    }
+
+    // Hit is in the slice. Find its DOM element, scroll the matched LINE (not the whole message)
+    // into view, then wrap the matched substring in a <mark class="is-search-match"> so the user
+    // can see exactly which word/phrase the search returned. Falls back to the whole-message
+    // scroll + message-level highlight when the inline match can't be located (body edited since
+    // indexing, the body is empty/revoked, or the rendered text splits the substring across nodes).
+    try {
+      const wrapper = container.querySelector<HTMLElement>(
+        `[data-wa-message-id="${CSS.escape(target.waMessageId)}"]`,
+      );
+      if (wrapper) {
+        // First clear any prior highlights across the whole container so a stale <mark> from an
+        // earlier search doesn't survive the new jump.
+        clearSearchHighlights(container);
+
+        // Wait for React to commit this render before walking the DOM — useLayoutEffect runs
+        // synchronously after the commit so the wrapper is mounted, but if a prepend was just
+        // applied we need one more frame for the new rows to settle.
+        requestAnimationFrame(() => {
+          const w = messagesContainerRef.current?.querySelector<HTMLElement>(
+            `[data-wa-message-id="${CSS.escape(target.waMessageId)}"]`,
+          );
+          if (!w) return;
+          // Re-locate the wrapper inside the rAF (it might have been replaced by React's
+          // reconciliation when the prepend committed).
+          const bodyEl =
+            w.querySelector<HTMLElement>('.message-text') ||
+            w.querySelector<HTMLElement>('.message-bubble') ||
+            w;
+
+          const hasMatchPosition = target.matchStart >= 0 && target.matchLength > 0;
+          // Pull the rendered body text once: even if the DOM split the matched substring across
+          // multiple text nodes, the substring itself is recoverable from the raw `body` (it was
+          // indexed verbatim by FTS). Fall back to the wrapper scroll when the substring isn't in
+          // the rendered text.
+          const rendered = bodyEl.textContent ?? '';
+          const matchedText = hasMatchPosition
+            ? found.body?.slice(target.matchStart, target.matchStart + target.matchLength) ?? ''
+            : '';
+          const mark = hasMatchPosition && matchedText && rendered.includes(matchedText)
+            ? highlightSearchMatch(bodyEl, matchedText)
+            : null;
+
+          if (mark) {
+            // Scroll the actual <mark> into view (not the whole message) so the matched line lands
+            // centered when the message is taller than the viewport (multi-line messages).
+            mark.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          } else {
+            // Fallback: scroll the whole message wrapper. Still applies the message-level pulse.
+            w.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }
+        });
+
+        setHighlightedHitId(target.waMessageId);
+        if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = setTimeout(() => {
+          // Strip the <mark> wrappers so the DOM returns to its original state, then drop the
+          // message-level highlight class via setState.
+          const c = messagesContainerRef.current;
+          if (c) clearSearchHighlights(c);
+          setHighlightedHitId(null);
+          highlightTimerRef.current = null;
+        }, 4000);
+      }
+    } catch {
+      // waMessageId contained unexpected characters — ignore.
+    }
+    setSearchHitTarget(null);
+    loadedOlderPagesRef.current = 0;
+  }, [
+    activeChat,
+    loadingMessages,
+    messages,
+    total,
+    messagesContainerRef,
+    searchHitTarget,
+    loadOlderForSearch,
+    loadOlderForSearchPending,
+  ]);
+
+  // Clean up the highlight timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // When the active chat changes, any leftover <mark class="is-search-match"> in the old chat's
+  // DOM is already gone (the messages list unmounted), but the React state (highlightedHitId) and
+  // the pending timer can still be live. Clear both so the pulse doesn't flash on the new chat's
+  // top row and a stale timer doesn't blank the next highlight prematurely.
+  useEffect(() => {
+    if (highlightTimerRef.current) {
+      clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+    setHighlightedHitId(null);
+  }, [activeChat?.id]);
+
+  // --- Load-older scroll anchor effect (B) ---
+  // (The prependAnchorRef itself is declared near the top of the component, alongside searchHitTarget,
+  // so the search-jump resolver effect can also set it without a forward reference.)
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;
     if (!anchor) return;
     prependAnchorRef.current = null;
+    // The search-jump resolver path sets this flag — it will scroll to the hit via scrollIntoView
+    // on the next render, so we don't want to restore the previous scroll position here (it would
+    // fight the scrollIntoView and land the viewport somewhere random).
+    if (anchor.forSearchJump) return;
     const el = messagesContainerRef.current;
     if (!el || !anchor.firstEl) return;
     // Only adjust when a prepend actually happened: the previously-first message is no longer the
@@ -638,6 +838,7 @@ export function Chats() {
       firstEl: firstMsg,
       firstTop: firstMsg?.offsetTop ?? 0,
       prevScrollTop: el.scrollTop,
+      forSearchJump: false,
     };
     loadOlder(messages.length);
   }, [loadOlder, messages.length, messagesContainerRef]);
@@ -856,15 +1057,7 @@ export function Chats() {
 
   return (
     <div className="chats-page">
-      <PageHeader
-        title={t('nav.chats')}
-        subtitle={t('chats.subtitle')}
-        actions={
-          sessions.length > 0 && (
-            <GlobalSearch sessionId={selectedSessionId} onResultClick={handleSearchHit} />
-          )
-        }
-      />
+      <PageHeader title={t('nav.chats')} subtitle={t('chats.subtitle')} />
 
       {/* Real-time connection permanently dropped — let the user re-establish it instead of
           silently showing stale chats. */}
@@ -915,20 +1108,47 @@ export function Chats() {
                 </select>
               </div>
 
-              {/* Search bar */}
-              <div className="chat-search-input">
-                <Search size={18} />
-                <input
-                  type="text"
-                  placeholder={t('chats.searchPlaceholder')}
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                />
+              {/* Search mode toggle + (chats-mode) name/id filter input. Messages mode renders
+                  GlobalSearch as a flex:1 sibling below — see below. */}
+              <div className="sidebar-search-modes" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={searchMode === 'chats'}
+                  className={`sidebar-search-mode ${searchMode === 'chats' ? 'active' : ''}`}
+                  onClick={() => setSearchMode('chats')}
+                >
+                  {t('chats.searchMode.chats', 'Chats')}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={searchMode === 'messages'}
+                  className={`sidebar-search-mode ${searchMode === 'messages' ? 'active' : ''}`}
+                  onClick={() => setSearchMode('messages')}
+                >
+                  {t('chats.searchMode.messages', 'Messages')}
+                </button>
               </div>
+
+              {searchMode === 'chats' && (
+                <div className="chat-search-input">
+                  <Search size={18} />
+                  <input
+                    type="text"
+                    placeholder={t('chats.searchPlaceholder')}
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                  />
+                </div>
+              )}
             </div>
 
-            {/* Chat list */}
-            <div className="chats-list">
+            {/* Chat list (chats mode) OR global message search panel (messages mode). Both share
+                the same .chats-list / .global-search `flex:1; overflow-y: auto` geometry so they
+                fill the sidebar's remaining height identically. */}
+            {searchMode === 'chats' ? (
+              <div className="chats-list">
               {loadingChats ? (
                 <div className="chats-list-loading">
                   <Loader2 className="animate-spin" size={24} />
@@ -976,6 +1196,9 @@ export function Chats() {
                 })
               )}
             </div>
+            ) : (
+              <GlobalSearch sessionId={selectedSessionId} onResultClick={handleSearchHit} />
+            )}
           </aside>
 
           {/* RIGHT VIEW: active chat room */}
@@ -1166,10 +1389,54 @@ export function Chats() {
                       const isRevoked = msg.type === 'revoked';
                       const isMasked = msg.type === 'masked';
 
+                      // Resolve sender info for incoming messages. In 1:1 chats the chat header
+                      // already identifies the contact, so the per-message label is most useful in
+                      // groups (multiple senders, `from` is the chat JID, not the author). The label
+                      // is also shown for any incoming message that the engine attached a contact
+                      // record to (pushName / phone) — that gives the per-message bubble the same
+                      // contact identity the chat header carries.
+                      // Priority: pushName, then contact.name, then a real E.164 phone, then LID/JID
+                      // fallback. Always show name · phone (or just phone/LID when no name).
+                      const meta = msg.metadata;
+                      const c = meta?.contact;
+                      const isGroupMessage = !!meta?.isGroup;
+                      const senderInfo = !isMe && (isGroupMessage || meta?.author || c)
+                        ? (() => {
+                            const phone = meta?.senderPhone || c?.number;
+                            const rawJid = meta?.author || msg.from;
+                            const rawId = rawJid?.split('@')[0] ?? '';
+                            const jidSuffix = rawJid?.split('@')[1] ?? '';
+                            const pushName = c?.pushName;
+                            const name = c?.name;
+                            const isLid = jidSuffix === 'lid';
+                            const isGroupJid = jidSuffix === 'g.us';
+                            // Only treat `phone` as a real phone if it differs from the raw JID user-part
+                            // (otherwise the engine just handed us the LID digits as if they were a phone).
+                            const realPhone = phone && phone.replace(/^\+/, '') !== rawId
+                              ? (phone.startsWith('+') ? phone : `+${phone}`)
+                              : null;
+                            const parts: string[] = [];
+                            if (pushName) parts.push(pushName);
+                            if (name && name !== realPhone && name !== `+${rawId}` && name !== pushName) {
+                              parts.push(name);
+                            }
+                            if (realPhone) {
+                              parts.push(realPhone);
+                            } else if (isLid) {
+                              parts.push(`LID:${rawId}`);
+                            } else if (!isGroupJid && rawId) {
+                              parts.push(`+${rawId}`);
+                            }
+                            return parts.length > 0 ? parts.join(' · ') : undefined;
+                          })()
+                        : undefined;
+
                       return (
                         <div
                           key={msg.id}
-                          className={`message-bubble-wrapper ${isMe ? 'outgoing' : 'incoming'}`}
+                          className={`message-bubble-wrapper ${isMe ? 'outgoing' : 'incoming'}${
+                            highlightedHitId && msg.waMessageId === highlightedHitId ? ' is-search-hit' : ''
+                          }`}
                           data-wa-message-id={msg.waMessageId}
                         >
                           <div className="message-bubble-container">
@@ -1178,6 +1445,10 @@ export function Chats() {
                                 isMediaMessage ? 'media-type' : ''
                               } ${isRevoked ? 'revoked-type' : ''}`}
                             >
+                              {/* Sender name/phone in incoming messages (mainly groups) */}
+                              {senderInfo && (
+                                <div className="message-sender-name">{senderInfo}</div>
+                              )}
                               {/* Quoted message display */}
                               {msg.metadata?.quotedMessage && (
                                 <div className="message-quote-box">

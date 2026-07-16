@@ -802,6 +802,22 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
             if (incoming.call) {
               metadata.call = incoming.call;
             }
+            // Persist the per-sender info too so the dashboard can render author name/phone on
+            // history rows (incoming `from` is the *chat* JID for groups, not the actual sender).
+            // Storing under `metadata` avoids a schema migration; the API already returns metadata
+            // verbatim on the read path so the frontend only needs to add the fields to its type.
+            if (typeof incoming.author === 'string') {
+              metadata.author = incoming.author;
+            }
+            if (typeof incoming.isGroup === 'boolean') {
+              metadata.isGroup = incoming.isGroup;
+            }
+            if (incoming.contact) {
+              metadata.contact = incoming.contact;
+            }
+            if (incoming.senderPhone !== undefined) {
+              metadata.senderPhone = incoming.senderPhone;
+            }
 
             const chatName = incoming.contact?.pushName ?? incoming.contact?.name ?? undefined;
 

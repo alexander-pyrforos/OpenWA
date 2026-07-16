@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { searchApi, sessionApi, type SearchHit } from '../services/api';
 import { escapeHtml, highlightQueryTerm, highlightMatchLine } from './search-highlight';
+import { useCurrentEngineQuery } from '../hooks/queries';
 import './GlobalSearch.css';
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
@@ -87,9 +88,14 @@ function useSearchThumbnails(results: SearchHit[]): {
 } {
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const observerRef = useRef<IntersectionObserver | null>(null);
+  // Baileys has no on-demand history endpoint (returns 501); skip the per-chat history-with-media
+  // fetch entirely so we don't pepper the network tab with 501s for every visible search hit.
+  const { data: currentEngine } = useCurrentEngineQuery();
+  const engineSupportsHistory = currentEngine?.engineType !== 'baileys';
 
   // Group previewable media hits by chat so each chat fetches at most once.
   const groups = useMemo(() => {
+    if (!engineSupportsHistory) return new Map();
     const m = new Map<string, { sessionId: string; chatId: string; hits: SearchHit[] }>();
     for (const hit of results) {
       if (!hit.hasMedia || !PREVIEWABLE_TYPES.has(hit.type)) continue;
@@ -98,7 +104,7 @@ function useSearchThumbnails(results: SearchHit[]): {
       m.get(key)!.hits.push(hit);
     }
     return m;
-  }, [results]);
+  }, [results, engineSupportsHistory]);
 
   useEffect(() => {
     const io = new IntersectionObserver(

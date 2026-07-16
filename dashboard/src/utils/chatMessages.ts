@@ -71,6 +71,10 @@ export interface ChatMessageView extends ChatMessage {
     quotedMessage?: { id: string; body: string };
     reactions?: Record<string, string>;
     call?: { video: boolean; missed: boolean };
+    author?: string;
+    isGroup?: boolean;
+    contact?: { id?: string; number?: string; name?: string; pushName?: string; shortName?: string };
+    senderPhone?: string | null;
   };
 }
 
