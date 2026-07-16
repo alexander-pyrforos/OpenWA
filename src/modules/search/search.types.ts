@@ -68,4 +68,13 @@ export interface SearchHit {
    *  document). Used by the dashboard to decide whether to attempt a thumbnail fetch. */
   hasMedia: boolean;
   score?: number;
+  /** Character offset of the first occurrence of the query in `body` (0-indexed, code-unit index in
+   *  the JS string). Computed on the backend with a case-insensitive search so the dashboard can
+   *  scroll the renderer to the matched line and highlight it. `-1` when the body is empty or the
+   *  query can't be located (e.g. provider matched on stemming/aliases that the raw text doesn't
+   *  contain verbatim). */
+  matchStart: number;
+  /** Length of the matched substring (code-units, matches `body.substring(matchStart, matchStart +
+   *  matchLength)`). `-1` when `matchStart` is `-1`. */
+  matchLength: number;
 }

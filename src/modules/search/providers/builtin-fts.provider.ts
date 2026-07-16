@@ -8,6 +8,38 @@ import { SEARCH_LIMIT_MAX } from '../search.constants';
 
 const MAX_SNIPPET_WORDS = 24;
 
+/**
+ * Locate the first occurrence of the user's query inside a body so the dashboard can scroll the
+ * renderer to the exact line and highlight the matched substring. FTS may have matched on stems
+ * (Postgres `websearch_to_tsquery` does morphological matching) so a naïve indexOf on the raw query
+ * fails for inflected forms (e.g. "running" vs body containing "ran"). Strategy:
+ *   1. Try the full query as-is, case-insensitive.
+ *   2. If absent, try each whitespace-separated token individually (longest first), case-insensitive.
+ *   3. Return (-1, -1) if nothing was found — the dashboard will then fall back to its existing
+ *      whole-message scroll + message-level highlight.
+ */
+function findMatch(body: string, query: string): { matchStart: number; matchLength: number } {
+  if (!body || !query) return { matchStart: -1, matchLength: -1 };
+  const lowerBody = body.toLowerCase();
+  const lowerQuery = query.toLowerCase().trim();
+  if (!lowerQuery) return { matchStart: -1, matchLength: -1 };
+
+  const full = lowerBody.indexOf(lowerQuery);
+  if (full !== -1) return { matchStart: full, matchLength: lowerQuery.length };
+
+  // Token fallback: longest token wins (e.g. "running" preferred over "run" if both match).
+  const tokens = lowerQuery
+    .split(/\s+/)
+    .map(t => t.replace(/[^\p{L}\p{N}]/gu, ''))
+    .filter(t => t.length >= 2)
+    .sort((a, b) => b.length - a.length);
+  for (const tok of tokens) {
+    const idx = lowerBody.indexOf(tok);
+    if (idx !== -1) return { matchStart: idx, matchLength: tok.length };
+  }
+  return { matchStart: -1, matchLength: -1 };
+}
+
 /** Shape returned by the dialect-specific SELECT in buildSqlite / buildPostgres. */
 interface FtsResultRow {
   id: string;
@@ -114,7 +146,7 @@ export class BuiltInFtsProvider implements SearchProvider {
       }
       throw e;
     }
-    const hits: SearchHit[] = rows.map(r => this.mapRow(r));
+    const hits: SearchHit[] = rows.map(r => this.mapRow(r, query.q));
     const total = rows.length < limit && offset === 0 ? rows.length : await this.count(query, isPostgres);
 
     return { hits, total, tookMs: Date.now() - start, provider: this.id };
@@ -131,7 +163,9 @@ export class BuiltInFtsProvider implements SearchProvider {
     }
   }
 
-  private mapRow(r: FtsResultRow): SearchHit {
+  private mapRow(r: FtsResultRow, query: string): SearchHit {
+    const body = r.body ?? '';
+    const { matchStart, matchLength } = findMatch(body, query);
     return {
       id: r.id,
       waMessageId: r.wa_message_id ?? '',
@@ -140,7 +174,7 @@ export class BuiltInFtsProvider implements SearchProvider {
       chatName: r.chat_name,
       from: r.from_col,
       to: r.to_col,
-      body: r.body ?? '',
+      body,
       snippet: r.snippet ?? '',
       timestamp: Number(r.timestamp ?? 0),
       createdAt: r.created_at,
@@ -148,6 +182,8 @@ export class BuiltInFtsProvider implements SearchProvider {
       direction: r.direction as MessageDirection,
       hasMedia: Boolean(r.has_media),
       score: r.score == null ? undefined : Number(r.score),
+      matchStart,
+      matchLength,
     };
   }
 

@@ -70,6 +70,8 @@ describe('PluginSearchProvider', () => {
     type: 'text',
     direction: MessageDirection.OUTGOING,
     hasMedia: false,
+    matchStart: 0,
+    matchLength: 2,
     ...overrides,
   });
 

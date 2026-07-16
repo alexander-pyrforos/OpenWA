@@ -26,6 +26,8 @@ describe('search.types', () => {
       direction: MessageDirection.OUTGOING,
       hasMedia: false,
       score: 1,
+      matchStart: 0,
+      matchLength: 2,
     };
     expect(provider.id).toBe('test');
     expect(hit.body).toBe('hi');

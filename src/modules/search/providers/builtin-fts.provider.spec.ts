@@ -134,4 +134,26 @@ describe('BuiltInFtsProvider (sqlite)', () => {
     const newTerm = await provider.search({ q: 'goodbye' });
     expect(newTerm.hits.map(h => h.body)).toContain('goodbye updated');
   });
+
+  it('populates matchStart/matchLength on hits so the dashboard can scroll to the matched line', async () => {
+    // The dashboard relies on these to wrap the matched substring in a <mark> + scroll the <mark>
+    // into view. The position is a code-unit offset in the raw body so the dashboard can recover
+    // the matched substring as `body.slice(matchStart, matchStart + matchLength)`.
+    const repo = ds.getRepository(Message);
+    await repo.insert({
+      sessionId: 's3',
+      chatId: 'c3',
+      from: 'x@c.us',
+      to: 'dest@c.us',
+      body: 'alpha beta gamma delta',
+      type: 'text',
+      direction: MessageDirection.OUTGOING,
+      timestamp: 100,
+    });
+    const res = await provider.search({ q: 'gamma', limit: 10 });
+    expect(res.hits.length).toBeGreaterThan(0);
+    const hit = res.hits.find(h => h.body === 'alpha beta gamma delta')!;
+    expect(hit.matchStart).toBe('alpha beta gamma delta'.indexOf('gamma'));
+    expect(hit.matchLength).toBe('gamma'.length);
+  });
 });
