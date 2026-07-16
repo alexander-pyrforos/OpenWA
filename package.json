@@ -29,6 +29,7 @@
     "check:versions": "node scripts/check-doc-versions.mjs",
     "openapi:export": "ts-node scripts/export-openapi.ts openapi.json",
     "openapi:check": "ts-node scripts/export-openapi.ts /tmp/openapi.generated.json && diff -u openapi.json /tmp/openapi.generated.json",
+    "backfill:history:wwebjs": "ts-node -r tsconfig-paths/register scripts/wwebjs-history-backfill.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
     "lint:fix": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",

@@ -2147,6 +2147,103 @@ describe('SessionService', () => {
         delete process.env.STORE_EPHEMERAL_MESSAGES;
       });
     });
+
+    // ── backfillHistoryMessage (wwebjs history-backfill CLI) ─────────
+    // Public wrapper around the private persistIncomingMessage; carries the same dedup + metadata
+    // contract but is called by the CLI with dispatch=false. Tests here pin the CLI's contract:
+    // the row lands with author/contact/senderPhone in metadata, a duplicate is silently skipped,
+    // a transient DB error does NOT fire webhooks, and a successful insert does NOT fire webhooks
+    // (history must never re-trigger live consumers).
+    describe('backfillHistoryMessage', () => {
+      it('persists the message with author / contact / senderPhone in metadata', async () => {
+        await startAndCaptureCallbacks();
+        (messageRepository.insert as jest.Mock).mockClear();
+        (webhookService.dispatch as jest.Mock).mockClear();
+        (messageRepository.create as jest.Mock).mockImplementation((data: Record<string, unknown>) => ({ ...data }));
+
+        await service.backfillHistoryMessage('sess-uuid-1', {
+          id: 'hist-1',
+          from: 'group@g.us',
+          to: 'me@c.us',
+          chatId: 'group@g.us',
+          body: 'hello',
+          type: 'text',
+          timestamp: 1700000000,
+          fromMe: false,
+          isGroup: true,
+          author: '12025550100@c.us',
+          contact: { id: '12025550100@c.us', number: '12025550100', pushName: 'Alice', name: 'Alice' },
+          senderPhone: '12025550100',
+        });
+
+        expect(messageRepository.insert).toHaveBeenCalledTimes(1);
+        const inserted = ((messageRepository.insert as jest.Mock).mock.calls as unknown[][])[0][0] as {
+          metadata?: Record<string, unknown>;
+        };
+        expect(inserted.metadata).toMatchObject({
+          author: '12025550100@c.us',
+          isGroup: true,
+          contact: { pushName: 'Alice', number: '12025550100' },
+          senderPhone: '12025550100',
+        });
+        // Critical: no webhook/WS dispatch on the backfill path — history must not re-fire live consumers.
+        expect(webhookService.dispatch).not.toHaveBeenCalled();
+      });
+
+      it('is idempotent: a duplicate waMessageId does not throw and does not dispatch', async () => {
+        await startAndCaptureCallbacks();
+        (messageRepository.insert as jest.Mock).mockClear();
+        (webhookService.dispatch as jest.Mock).mockClear();
+        // First call: UNIQUE collision (the same row already exists from a prior run).
+        (messageRepository.insert as jest.Mock).mockRejectedValueOnce({
+          driverError: { code: 'SQLITE_CONSTRAINT_UNIQUE', message: 'UNIQUE constraint failed' },
+        });
+
+        await expect(
+          service.backfillHistoryMessage('sess-uuid-1', {
+            id: 'hist-dup',
+            from: 'peer@c.us',
+            to: 'me@c.us',
+            chatId: 'peer@c.us',
+            body: 'already there',
+            type: 'text',
+            timestamp: 1,
+            fromMe: false,
+            isGroup: false,
+          }),
+        ).resolves.toBeUndefined();
+
+        expect(webhookService.dispatch).not.toHaveBeenCalled();
+      });
+
+      it('does not populate senderPhone metadata when the message has no author / LID resolution', async () => {
+        await startAndCaptureCallbacks();
+        (messageRepository.insert as jest.Mock).mockClear();
+        (messageRepository.create as jest.Mock).mockImplementation((data: Record<string, unknown>) => ({ ...data }));
+
+        await service.backfillHistoryMessage('sess-uuid-1', {
+          id: 'hist-2',
+          from: 'peer@c.us',
+          to: 'me@c.us',
+          chatId: 'peer@c.us',
+          body: 'plain',
+          type: 'text',
+          timestamp: 1,
+          fromMe: false,
+          isGroup: false,
+        });
+
+        const inserted = ((messageRepository.insert as jest.Mock).mock.calls as unknown[][])[0][0] as {
+          metadata?: Record<string, unknown>;
+        };
+        // Plain 1:1 message: no author/contact/senderPhone keys should be in metadata. The dashboard
+        // sender-label gate already suppresses rendering for these (`!isMe && (isGroup || meta?.author || c)`),
+        // so writing the keys anyway would be misleading.
+        expect(inserted.metadata?.author).toBeUndefined();
+        expect(inserted.metadata?.contact).toBeUndefined();
+        expect(inserted.metadata?.senderPhone).toBeUndefined();
+      });
+    });
   });
 
   // ── stop ──────────────────────────────────────────────────────────

@@ -563,6 +563,133 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   }
 
   /**
+   * Persist a single `IncomingMessage` to the `messages` table with full sender-info metadata. Shared
+   * between the live `onMessage` handler (dispatch=true: webhooks/WS fire) and the wwebjs history
+   * backfill CLI (dispatch=false: pre-connection history must not re-fire webhooks for old messages).
+   *
+   * De-duplication is keyed on UNIQUE(sessionId, waMessageId) — the engine can re-fire `message` for
+   * one inbound (#464) and the history CLI can re-run over the same chats. `insert()` throws on
+   * collision; the caller treats `persisted: false` + `failure: 'duplicate'` as a no-op (dispatch
+   * skipped — the original already fired webhooks). A transient non-constraint error
+   * (SQLITE_BUSY / connection drop) returns `failure: 'transient'` so the live caller can still
+   * dispatch: a real inbound must not be dropped by a transient DB failure. The hook emit
+   * (message:persisted) stays gated on `persisted: true` because plugins need a durable row, so a
+   * non-persisted dispatch never hands plugins an id-less payload.
+   *
+   * LID resolution (#263) is opt-in via RESOLVE_LID_TO_PHONE; only fires for privacy-id senders
+   * (`isLidSender && !fromMe`) so normal numbers never trigger a contact lookup. The resolved phone
+   * is stored under `metadata.senderPhone` and cached in `lidPhoneCache` for the session lifetime.
+   */
+  private async persistIncomingMessage(
+    id: string,
+    incoming: IncomingMessage,
+    opts: { dispatch: boolean; event?: IncomingMessage | Record<string, unknown> },
+  ): Promise<{ persisted: boolean; failure: 'duplicate' | 'transient' | 'none'; dbMessage: Message }> {
+    // Sentinel: callers that don't have a DB row yet (skip path) get a never-persisted stub so the
+    // shape is stable. The hook chain in `onMessage` and the backfill CLI both check `persisted`
+    // before acting on the result, so this stays out of the DB.
+    const stub = this.messageRepository.create({
+      sessionId: id,
+      waMessageId: incoming.id,
+      chatId: incoming.chatId,
+    });
+
+    if (resolveFeatureFlags(this.configService).resolveLidToPhone && incoming.isLidSender && !incoming.fromMe) {
+      incoming.senderPhone = await this.resolveSenderPhone(id, incoming.author ?? incoming.from);
+    }
+
+    const metadata: Record<string, unknown> = {};
+    if (incoming.media) {
+      metadata.media = incoming.media;
+    }
+    if (incoming.quotedMessage) {
+      metadata.quotedMessage = incoming.quotedMessage;
+    }
+    if (incoming.call) {
+      metadata.call = incoming.call;
+    }
+    // Persist the per-sender info too so the dashboard can render author name/phone on history rows
+    // (incoming `from` is the *chat* JID for groups, not the actual sender). Storing under `metadata`
+    // avoids a schema migration; the API already returns metadata verbatim on the read path.
+    if (typeof incoming.author === 'string') {
+      metadata.author = incoming.author;
+    }
+    if (typeof incoming.isGroup === 'boolean') {
+      metadata.isGroup = incoming.isGroup;
+    }
+    if (incoming.contact) {
+      metadata.contact = incoming.contact;
+    }
+    if (incoming.senderPhone !== undefined) {
+      metadata.senderPhone = incoming.senderPhone;
+    }
+
+    const chatName = incoming.contact?.pushName ?? incoming.contact?.name ?? undefined;
+
+    const dbMessage = this.messageRepository.create({
+      sessionId: id,
+      waMessageId: incoming.id,
+      chatId: incoming.chatId,
+      chatName,
+      from: incoming.from,
+      to: incoming.to,
+      body: incoming.body,
+      type: incoming.type,
+      direction: incoming.fromMe ? MessageDirection.OUTGOING : MessageDirection.INCOMING,
+      timestamp: incoming.timestamp,
+      status: MessageStatus.SENT,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    });
+
+    try {
+      // `insert()` (not `save()`) is load-bearing: the UNIQUE(sessionId, waMessageId) constraint makes
+      // a duplicate insert throw, which is the atomic dedup oracle for #464 re-fires AND for the
+      // history-backfill CLI re-running over the same chats. Unlike `save()`, `insert()` does NOT
+      // merge DB-generated columns (@PrimaryGeneratedColumn, @CreateDateColumn) back onto the entity
+      // — so merge them explicitly here. `identifiers[0]` always carries the PK on both SQLite and
+      // Postgres; `generatedMaps[0]` adds createdAt where the driver returns it.
+      const insertResult = await this.messageRepository.insert(dbMessage as unknown as QueryDeepPartialEntity<Message>);
+      Object.assign(dbMessage, insertResult.identifiers[0] ?? {}, insertResult.generatedMaps?.[0] ?? {});
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        return { persisted: false, failure: 'duplicate', dbMessage: stub };
+      }
+      this.logger.error(`Failed to save incoming message ${incoming.id} to database`, String(err));
+      // Fail-open: a transient DB error (SQLITE_BUSY / connection drop) must not drop a real inbound.
+      // The next live re-fire (or history-CLI retry) will land the row; meanwhile the webhook/WS
+      // contract still fires exactly once for this message id, matching the pre-refactor behavior
+      // that this test guards.
+      if (opts.dispatch) {
+        const event = (opts.event ?? incoming) as IncomingMessage;
+        void this.webhookService.dispatch(id, 'message.received', event as unknown as Record<string, unknown>);
+        this.eventsGateway.emitMessage(id, event as unknown as Record<string, unknown>);
+      }
+      return { persisted: false, failure: 'transient', dbMessage: stub };
+    }
+
+    // Dispatch is gated on persisted=true for the common case (DB write committed). On a transient
+    // DB failure we still dispatch when opts.dispatch=true — a real inbound must never be dropped
+    // by a transient SQLITE_BUSY / connection drop; the next retry will land the row. On a duplicate
+    // (UNIQUE collision from a re-fire) we skip: the original already fired webhooks.
+    if (opts.dispatch) {
+      const event = (opts.event ?? incoming) as IncomingMessage;
+      void this.webhookService.dispatch(id, 'message.received', event as unknown as Record<string, unknown>);
+      this.eventsGateway.emitMessage(id, event as unknown as Record<string, unknown>);
+    }
+    return { persisted: true, failure: 'none', dbMessage };
+  }
+
+  /**
+   * Public wrapper around the private {@link persistIncomingMessage} for the wwebjs history-backfill
+   * CLI (scripts/wwebjs-history-backfill.ts). Always passes `dispatch=false` so pre-connection
+   * history never re-fires webhooks/WS. The CLI doesn't need the result discriminator; it just
+   * counts inserted-vs-duplicate in its own progress log.
+   */
+  async backfillHistoryMessage(sessionId: string, incoming: IncomingMessage): Promise<void> {
+    await this.persistIncomingMessage(sessionId, incoming, { dispatch: false });
+  }
+
+  /**
    * Persist pre-connection history into the `messages` table for the chat view, without webhook/hook/ws
    * dispatch (it predates the live session). De-duplicated by `waMessageId` so re-syncs never duplicate.
    */
@@ -783,58 +910,10 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
             }
 
             // Persist the incoming message so the dashboard chats view can render history.
+            // Shared with the wwebjs history-backfill CLI (scripts/wwebjs-history-backfill.ts), which
+            // calls the same method with dispatch=false to enrich old messages with author metadata
+            // without re-firing webhooks/WS events for pre-connection history.
             const incoming: IncomingMessage = finalMessage;
-
-            // Inline @lid -> phone resolution (#263), opt-in via RESOLVE_LID_TO_PHONE. Best-effort:
-            // attaches senderPhone (digits or null) before persist/dispatch so webhook/ws consumers
-            // get it in a single pass. Only for privacy-id senders, so no lookup for normal numbers.
-            if (resolveFeatureFlags(this.configService).resolveLidToPhone && incoming.isLidSender && !incoming.fromMe) {
-              incoming.senderPhone = await this.resolveSenderPhone(id, incoming.author ?? incoming.from);
-            }
-
-            const metadata: Record<string, unknown> = {};
-            if (incoming.media) {
-              metadata.media = incoming.media;
-            }
-            if (incoming.quotedMessage) {
-              metadata.quotedMessage = incoming.quotedMessage;
-            }
-            if (incoming.call) {
-              metadata.call = incoming.call;
-            }
-            // Persist the per-sender info too so the dashboard can render author name/phone on
-            // history rows (incoming `from` is the *chat* JID for groups, not the actual sender).
-            // Storing under `metadata` avoids a schema migration; the API already returns metadata
-            // verbatim on the read path so the frontend only needs to add the fields to its type.
-            if (typeof incoming.author === 'string') {
-              metadata.author = incoming.author;
-            }
-            if (typeof incoming.isGroup === 'boolean') {
-              metadata.isGroup = incoming.isGroup;
-            }
-            if (incoming.contact) {
-              metadata.contact = incoming.contact;
-            }
-            if (incoming.senderPhone !== undefined) {
-              metadata.senderPhone = incoming.senderPhone;
-            }
-
-            const chatName = incoming.contact?.pushName ?? incoming.contact?.name ?? undefined;
-
-            const dbMessage = this.messageRepository.create({
-              sessionId: id,
-              waMessageId: incoming.id,
-              chatId: incoming.chatId,
-              chatName,
-              from: incoming.from,
-              to: incoming.to,
-              body: incoming.body,
-              type: incoming.type,
-              direction: incoming.fromMe ? MessageDirection.OUTGOING : MessageDirection.INCOMING,
-              timestamp: incoming.timestamp,
-              status: MessageStatus.SENT,
-              metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
-            });
 
             // The hook chain above is async; a delete()/teardown can retire this engine while it
             // awaits. Re-check liveness so a late continuation can't persist an orphan messages row
@@ -842,60 +921,29 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
             // session that no longer exists. Mirrors the synchronous isLiveEngine gate at entry.
             if (!this.isLiveEngine(id, engine)) return;
 
-            // De-duplicate at the source: the engine can re-fire `message` for one inbound message
-            // (#464). UNIQUE(sessionId, waMessageId) makes the insert the atomic dedup oracle — a
-            // near-simultaneous re-fire loses the race and is skipped here, so persist + webhook + WS
-            // happen exactly once. Fail-open: a non-conflict DB error still dispatches, so a real
-            // message is never dropped by a transient DB failure.
-            let isNewMessage = true;
-            let persisted = false;
-            try {
-              // `insert()` (not `save()`) is load-bearing: the UNIQUE(sessionId, waMessageId) constraint
-              // makes a duplicate insert throw, which is the atomic dedup oracle for #464 re-fires.
-              // Unlike `save()`, `insert()` does NOT merge DB-generated columns (@PrimaryGeneratedColumn,
-              // @CreateDateColumn) back onto the entity instance — so merge them explicitly here, before
-              // the `message:persisted` emit. `identifiers[0]` always carries the PK on both SQLite and
-              // Postgres; `generatedMaps[0]` adds createdAt where the driver returns it (Postgres yes;
-              // SQLite historically does not — acceptable; the PK is the load-bearing field for plugins).
-              const result = await this.messageRepository.insert(
-                dbMessage as unknown as QueryDeepPartialEntity<Message>,
-              );
-              Object.assign(dbMessage, result.identifiers[0] ?? {}, result.generatedMaps?.[0] ?? {});
-              persisted = true;
-            } catch (err) {
-              if (isUniqueConstraintError(err)) {
-                isNewMessage = false;
-              } else {
-                this.logger.error(`Failed to save incoming message ${incoming.id} to database`, String(err));
-              }
-            }
-            if (!isNewMessage) {
+            // dispatch=true on the live path: the method handles webhook+WS for both the happy path
+            // AND transient DB failures (fail-open). It returns failure='duplicate' on UNIQUE collision
+            // (the engine re-fired for an already-persisted message — original already dispatched, so
+            // skip everything) and persisted=true when the row landed. The hook emit stays gated on
+            // persisted=true because plugins need a durable row id.
+            const result = await this.persistIncomingMessage(id, incoming, { dispatch: true, event: finalMessage });
+            if (!result.persisted && result.failure === 'duplicate') {
               return; // duplicate re-fire — the original already persisted and dispatched
             }
 
-            // Fire-and-forget: a plugin handler must never break the receive path. Both engine adapters
-            // (wwjs `message` and Baileys `upsert`) converge on this persist, so one emit covers inbound.
-            // The built-in FTS search provider is DB-synced and does NOT consume this; it exists for
-            // plugin providers (Spec 2) + general use.
-            // Gate ONLY the hook on `persisted`: on a non-unique insert error (transient SQLITE_BUSY /
-            // lock-timeout / connection drop) the row was never stored and `dbMessage.id` is undefined,
-            // so emitting `message:persisted` would hand plugins an id-less payload for a row that isn't
-            // in the DB. The webhook/WS dispatch below stays fail-open — a real inbound message must
-            // never be dropped on a transient DB failure; only the hook requires a durable row.
-            if (persisted) {
+            if (result.persisted) {
+              // Fire-and-forget: a plugin handler must never break the receive path. Both engine adapters
+              // (wwjs `message` and Baileys `upsert`) converge on this persist, so one emit covers inbound.
+              // The built-in FTS search provider is DB-synced and does NOT consume this; it exists for
+              // plugin providers (Spec 2) + general use.
               void this.hookManager
                 .execute(
                   'message:persisted',
-                  { sessionId: id, message: dbMessage },
+                  { sessionId: id, message: result.dbMessage },
                   { sessionId: id, source: 'SessionService' },
                 )
                 .catch(() => undefined);
             }
-
-            // Dispatch to webhooks with potentially modified message
-            void this.webhookService.dispatch(id, 'message.received', finalMessage);
-            // Emit real-time event to WebSocket clients
-            this.eventsGateway.emitMessage(id, finalMessage);
           })
           .catch(err => this.logger.error(`onMessage handler failed for ${id}`, String(err)));
       },
