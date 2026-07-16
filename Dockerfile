@@ -108,6 +108,12 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/puppeteer-chrome
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Operator CLI scripts (wwebjs history backfill) — source-only because the script depends on the
+# full Nest DI graph (`../src/app.module`) and runs via `ts-node`, which ships as a transitive
+# dependency of other prod packages. The Dockerfile also ensures `scripts/` is in `.dockerignore`
+# cases the source ends up in the image; copy explicitly to make the dependency obvious.
+COPY --from=builder /app/scripts ./scripts
+
 # Copy the bundled dashboard SPA; ServeStaticModule serves it from this same process/port
 # (app.module.ts resolves dashboard/dist relative to dist/). Single container, single port.
 COPY --from=builder /app/dashboard/dist ./dashboard/dist
