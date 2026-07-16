@@ -108,6 +108,13 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/puppeteer-chrome
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Ship the `src/` source tree alongside the compiled `dist/` so the runtime ts-node invocation in
+# `npm run backfill:history:wwebjs` can resolve the script's `import '../src/...'` paths. The
+# script depends on the full Nest DI graph (AppModule, repositories, entities) and the cheapest
+# path is to ship the source it needs verbatim. ts-node loads it on demand — there's no compile
+# step in production. The cost is ~1-2MB of TS sources, dwarfed by the 800MB image base.
+COPY --from=builder /app/src ./src
+
 # Operator CLI scripts (wwebjs history backfill) — source-only because the script depends on the
 # full Nest DI graph (`../src/app.module`) and runs via `ts-node`, which ships as a transitive
 # dependency of other prod packages. The Dockerfile also ensures `scripts/` is in `.dockerignore`
