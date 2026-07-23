@@ -584,7 +584,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   private async persistIncomingMessage(
     id: string,
     incoming: IncomingMessage,
-    opts: { dispatch: boolean; event?: IncomingMessage | Record<string, unknown> },
+    opts: { dispatch: boolean; event?: IncomingMessage | Record<string, unknown>; enrichDuplicate?: boolean },
   ): Promise<{ persisted: boolean; failure: 'duplicate' | 'transient' | 'none'; dbMessage: Message }> {
     // Sentinel: callers that don't have a DB row yet (skip path) get a never-persisted stub so the
     // shape is stable. The hook chain in `onMessage` and the backfill CLI both check `persisted`
@@ -653,6 +653,15 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       Object.assign(dbMessage, insertResult.identifiers[0] ?? {}, insertResult.generatedMaps?.[0] ?? {});
     } catch (err) {
       if (isUniqueConstraintError(err)) {
+        // Backfill-only: the row already exists (prior Baileys sync or a live insert), usually
+        // WITHOUT author/contact/phone metadata. Fill the missing sender-info keys the backfill
+        // just resolved — best-effort, never blocks. See enrichDuplicateMetadata for the merge
+        // rules (only-absent keys, never clobbers reactions/acks or a richer live-set contact).
+        if (opts.enrichDuplicate) {
+          await this.enrichDuplicateMetadata(id, incoming).catch((e) =>
+            this.logger.warn(`Backfill enrich ${incoming.id} skipped: ${String(e)}`),
+          );
+        }
         return { persisted: false, failure: 'duplicate', dbMessage: stub };
       }
       this.logger.error(`Failed to save incoming message ${incoming.id} to database`, String(err));
@@ -687,7 +696,47 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    * counts inserted-vs-duplicate in its own progress log.
    */
   async backfillHistoryMessage(sessionId: string, incoming: IncomingMessage): Promise<void> {
-    await this.persistIncomingMessage(sessionId, incoming, { dispatch: false });
+    // enrichDuplicate: on a UNIQUE collision, fill the missing sender-info keys on the existing
+    // row instead of skipping it silently — that's the whole point of re-syncing history that was
+    // persisted by the Baileys sync without author/contact/phone metadata.
+    await this.persistIncomingMessage(sessionId, incoming, { dispatch: false, enrichDuplicate: true });
+  }
+
+  /**
+   * Backfill-only metadata enrichment for rows that already exist in the DB. The original insert
+   * (often the Baileys full-history sync) wrote the row without author/contact/phone, so a naive
+   * re-sync hits the UNIQUE constraint and skips it — leaving history unenriched forever. Instead,
+   * fill ONLY the sender-info keys the backfill just resolved and that are ABSENT on the existing
+   * row: author (group sender), contact (pushName), senderPhone (@lid->phone), isGroup. Never
+   * overwrite a key that's already set — a live-set contact ({name,number} from getContact) is
+   * richer than the backfill's {pushName}, and reactions/acks live in metadata too. Per-message
+   * SELECT+UPDATE is fine: this is a background job, never the live inbound path.
+   */
+  private async enrichDuplicateMetadata(sessionId: string, incoming: IncomingMessage): Promise<void> {
+    // Skip the round-trip entirely when there's nothing to add (the common 1:1 non-lid chat with no
+    // push name) — most history rows hit this fast path.
+    const contactKeys = incoming.contact ? Object.keys(incoming.contact).length : 0;
+    const hasAuthor = typeof incoming.author === 'string';
+    const hasContact = contactKeys > 0;
+    const hasPhone = incoming.senderPhone !== undefined;
+    const hasGroup = typeof incoming.isGroup === 'boolean';
+    if (!hasAuthor && !hasContact && !hasPhone && !hasGroup) return;
+
+    const existing = await this.messageRepository.findOne({
+      where: { sessionId, waMessageId: incoming.id },
+      select: ['metadata'],
+    });
+    const md = ((existing?.metadata ?? {}) as Record<string, unknown>);
+    let changed = false;
+    if (hasAuthor && md.author === undefined) { md.author = incoming.author; changed = true; }
+    if (hasContact && md.contact === undefined) { md.contact = incoming.contact; changed = true; }
+    if (hasPhone && md.senderPhone === undefined) { md.senderPhone = incoming.senderPhone; changed = true; }
+    if (hasGroup && md.isGroup === undefined) { md.isGroup = incoming.isGroup; changed = true; }
+    if (!changed) return;
+    await this.messageRepository.update(
+      { sessionId, waMessageId: incoming.id },
+      { metadata: md } as unknown as QueryDeepPartialEntity<Message>,
+    );
   }
 
   // ── In-process history backfill ───────────────────────────────────────────────────────────
