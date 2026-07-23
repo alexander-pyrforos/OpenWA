@@ -1165,7 +1165,17 @@ export function Chats() {
                     <div
                       key={chat.id}
                       className={`chat-item-card ${isActive ? 'active' : ''}`}
-                      onClick={() => setActiveChat(chat)}
+                      onClick={() => {
+                        // A manual sidebar click abandons any pending global-search jump. Without this,
+                        // searchHitTarget stays set if the resolver hasn't reached its clear-on-success
+                        // path (line ~774 — only hit when the active chat IS the search target AND the hit
+                        // is in the loaded slice). The "pick up pending chat" effect then re-selects the
+                        // search-target chat on every `chats` change (WS message / refetch / unread update),
+                        // yanking the user back a second after they pick a different chat.
+                        setSearchHitTarget(null);
+                        loadedOlderPagesRef.current = 0;
+                        setActiveChat(chat);
+                      }}
                     >
                       <div className="chat-avatar">
                         {chat.isGroup ? <Users size={20} /> : <User size={20} />}
@@ -1207,7 +1217,16 @@ export function Chats() {
               <div className="room-container">
                 {/* Room header */}
                 <header className="room-header">
-                  <button className="room-back" onClick={() => setActiveChat(null)} aria-label={t('common.back')}>
+                  <button
+                    className="room-back"
+                    onClick={() => {
+                      // Back button also abandons a pending search jump (see the sidebar onClick above).
+                      setSearchHitTarget(null);
+                      loadedOlderPagesRef.current = 0;
+                      setActiveChat(null);
+                    }}
+                    aria-label={t('common.back')}
+                  >
                     <ArrowLeft size={20} />
                   </button>
                   <div className="room-avatar">
