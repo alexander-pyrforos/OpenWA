@@ -19,6 +19,7 @@ import { Webhook } from '../webhook/entities/webhook.entity';
 import { Template } from '../template/entities/template.entity';
 import { BaileysStoredMessage } from '../../engine/adapters/baileys-stored-message.entity';
 import { CreateSessionDto } from './dto';
+import { BackfillJobState } from './backfill-job-state';
 import { EngineFactory } from '../../engine/engine.factory';
 import { resolveAuthTimeoutMs } from '../../engine/adapters/whatsapp-web-js.adapter';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
@@ -687,6 +688,152 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
    */
   async backfillHistoryMessage(sessionId: string, incoming: IncomingMessage): Promise<void> {
     await this.persistIncomingMessage(sessionId, incoming, { dispatch: false });
+  }
+
+  // ── In-process history backfill ───────────────────────────────────────────────────────────
+  // Runs in the LIVE API process so it can use the running engine. The CLI script
+  // (scripts/wwebjs-history-backfill.ts) cannot do this job: a separate `docker exec` process has
+  // an empty engines Map (getEngine returns undefined), and its Nest bootstrap re-runs onModuleInit
+  // which resets the live session to disconnected. Kicked off by POST /sessions/:id/backfill-history
+  // (fire-and-forget — the full run outlives the HTTP request timeout); progress is read via
+  // GET /sessions/:id/backfill-history. One job per session at a time.
+  private readonly backfillJobs = new Map<string, BackfillJobState>();
+
+  getBackfillJob(sessionId: string): BackfillJobState | undefined {
+    return this.backfillJobs.get(sessionId);
+  }
+
+  /**
+   * Register and start a history backfill for a session. Resolves once the job is registered and
+   * running in the background; the controller returns 202 immediately. ConflictException if one is
+   * already running; BadRequestException if the session has no live engine (start it first).
+   */
+  async startHistoryBackfill(
+    sessionId: string,
+    opts: { batchSize?: number; rateMs?: number; includeMedia?: boolean; chatIds?: string[] },
+  ): Promise<BackfillJobState> {
+    const existing = this.backfillJobs.get(sessionId);
+    if (existing?.status === 'running') {
+      throw new ConflictException('A history backfill is already running for this session');
+    }
+    const engine = this.getEngine(sessionId);
+    if (!engine) {
+      throw new BadRequestException('Session has no live engine — start the session first');
+    }
+    const batchSize = Math.min(Math.max(Math.trunc(opts.batchSize ?? 50), 1), 1000);
+    const rateMs = Math.max(Math.trunc(opts.rateMs ?? 1500), 0);
+    const includeMedia = opts.includeMedia ?? false;
+    // An empty chatIds array means "all chats" (the controller passes [] when no chatId query is
+    // given); only a non-empty list restricts. Without this, [] is truthy and `[].includes()` would
+    // exclude every chat — the very trap that made the first run process 0 of 77 chats.
+    const chatIds = opts.chatIds && opts.chatIds.length ? opts.chatIds.filter(Boolean) : null;
+
+    const state: BackfillJobState = {
+      status: 'running',
+      batchSize,
+      rateMs,
+      includeMedia,
+      chatsTotal: 0,
+      processed: 0,
+      chatsFailed: 0,
+      lastChat: null,
+      startedAt: Date.now(),
+      finishedAt: null,
+      error: null,
+    };
+    this.backfillJobs.set(sessionId, state);
+    // Fire-and-forget: the controller returns 202 while this runs in the background.
+    void this.executeBackfill(sessionId, engine, { batchSize, rateMs, includeMedia, chatIds }, state).catch((err) =>
+      this.logger.error(`Backfill ${sessionId} crashed: ${String(err)}`),
+    );
+    return state;
+  }
+
+  private async executeBackfill(
+    sessionId: string,
+    engine: IWhatsAppEngine,
+    opts: { batchSize: number; rateMs: number; includeMedia: boolean; chatIds: string[] | null },
+    state: BackfillJobState,
+  ): Promise<void> {
+    try {
+      this.logger.log(
+        `Backfill ${sessionId}: fetching chat list (batch=${opts.batchSize}, rate=${opts.rateMs}ms${opts.chatIds ? `, ${opts.chatIds.length} chat filter` : ''})`,
+      );
+      const allChats = await engine.getChats();
+      const filtered = allChats
+        .filter((c) => (opts.chatIds ? opts.chatIds.includes(c.id) : true))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      state.chatsTotal = filtered.length;
+      this.logger.log(`Backfill ${sessionId}: ${filtered.length} chats to process (of ${allChats.length} total)`);
+
+      for (let i = 0; i < filtered.length; i++) {
+        const chat = filtered[i];
+        state.lastChat = chat.id;
+        try {
+          const history = await this.fetchHistoryWithRetry(engine, chat.id, opts.batchSize, opts.includeMedia);
+          for (const m of history) {
+            // backfillHistoryMessage -> persistIncomingMessage(dispatch:false); dedup by UNIQUE(sessionId, waMessageId).
+            await this.backfillHistoryMessage(sessionId, m);
+          }
+          state.processed += history.length;
+          this.logger.log(`Backfill ${sessionId} [${i + 1}/${filtered.length}] ${chat.id} — history=${history.length}`);
+        } catch (err) {
+          state.chatsFailed++;
+          this.logger.warn(`Backfill ${sessionId}: chat ${chat.id} failed after retries: ${String(err)}`);
+        }
+        // Throttle between chats (skip after the last) so WhatsApp doesn't see a burst.
+        if (i < filtered.length - 1 && opts.rateMs > 0) {
+          await new Promise((r) => setTimeout(r, opts.rateMs));
+        }
+      }
+      state.status = 'completed';
+      this.logger.log(
+        `Backfill ${sessionId} done: chats=${filtered.length} processed=${state.processed} failed=${state.chatsFailed}`,
+      );
+    } catch (err) {
+      state.status = 'failed';
+      state.error = String(err);
+      this.logger.error(`Backfill ${sessionId} aborted: ${String(err)}`);
+    } finally {
+      state.finishedAt = Date.now();
+    }
+  }
+
+  // Per-chat fetch: 3 retries (5s/15s/45s) AND a per-attempt timeout, so one slow/hung chat (WA Web
+  // throttle or a flapped connection — fetchMessages can stall) can never wedge the whole job.
+  private async fetchHistoryWithRetry(
+    engine: IWhatsAppEngine,
+    chatId: string,
+    limit: number,
+    includeMedia: boolean,
+  ): Promise<IncomingMessage[]> {
+    const backoffs = [0, 5_000, 15_000, 45_000];
+    const attemptTimeoutMs = 90_000;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < backoffs.length; attempt++) {
+      if (backoffs[attempt] > 0) await new Promise((r) => setTimeout(r, backoffs[attempt]));
+      try {
+        return await this.withTimeout(
+          engine.getChatHistory(chatId, limit, includeMedia),
+          attemptTimeoutMs,
+          chatId,
+        );
+      } catch (err) {
+        lastErr = err;
+        this.logger.warn(`Backfill getChatHistory(${chatId}) attempt ${attempt + 1} failed: ${String(err)}`);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  private withTimeout<T>(p: Promise<T>, ms: number, chatId: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`getChatHistory(${chatId}) timed out after ${ms}ms`)), ms);
+    });
+    return Promise.race([p, timeout]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
   }
 
   /**

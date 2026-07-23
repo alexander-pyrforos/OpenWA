@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Delete, Param, Query, Body, HttpCode, HttpStatus, ParseUUIDPipe } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { SessionService } from './session.service';
+import { BackfillJobState } from './backfill-job-state';
 import {
   CreateSessionDto,
   SessionResponseDto,
@@ -162,6 +163,51 @@ export class SessionController {
       sessionName: session.name,
     });
     return this.transformSession(session);
+  }
+
+  @Post(':id/backfill-history')
+  @RequireRole(ApiKeyRole.OPERATOR)
+  @ApiOperation({
+    summary: 'Backfill chat history with author metadata (in-process, fire-and-forget)',
+  })
+  @ApiParam({ name: 'id', description: 'Session ID' })
+  @ApiQuery({ name: 'batchSize', required: false, type: Number, description: 'Messages per chat (default 50, max 1000)' })
+  @ApiQuery({ name: 'rateMs', required: false, type: Number, description: 'Throttle between chats in ms (default 1500)' })
+  @ApiQuery({ name: 'includeMedia', required: false, type: Boolean, description: 'Fetch media too (default false)' })
+  @ApiQuery({ name: 'chatId', required: false, description: 'Restrict to these chat ids (repeatable: ?chatId=a&chatId=b)' })
+  @ApiResponse({ status: 202, description: 'Backfill started', type: Object })
+  @ApiResponse({ status: 409, description: 'A backfill is already running for this session' })
+  @ApiResponse({ status: 400, description: 'Session has no live engine — start the session first' })
+  @HttpCode(HttpStatus.ACCEPTED)
+  async startBackfill(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('batchSize') batchSize?: string,
+    @Query('rateMs') rateMs?: string,
+    @Query('includeMedia') includeMedia?: string,
+    @Query('chatId') chatId?: string | string[],
+  ): Promise<{ started: true; sessionId: string; state: BackfillJobState }> {
+    const chatIds = Array.isArray(chatId) ? chatId : chatId ? [chatId] : [];
+    const state = await this.sessionService.startHistoryBackfill(id, {
+      batchSize: batchSize ? parseInt(batchSize, 10) : undefined,
+      rateMs: rateMs ? parseInt(rateMs, 10) : undefined,
+      includeMedia: includeMedia === 'true' ? true : includeMedia === 'false' ? false : undefined,
+      chatIds,
+    });
+    await this.auditService.logInfo(AuditAction.SESSION_HISTORY_BACKFILL, {
+      sessionId: id,
+    });
+    return { started: true, sessionId: id, state };
+  }
+
+  @Get(':id/backfill-history')
+  @RequireRole(ApiKeyRole.OPERATOR)
+  @ApiOperation({ summary: 'History backfill job status for a session' })
+  @ApiParam({ name: 'id', description: 'Session ID' })
+  @ApiResponse({ status: 200, description: 'Current backfill job state, or null if none has run' })
+  async getBackfillStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<{ state: BackfillJobState | null }> {
+    return { state: this.sessionService.getBackfillJob(id) ?? null };
   }
 
   @Get(':id/qr')

@@ -74,6 +74,7 @@ RUN apt-get update && apt-get install -y \
     gosu \
     curl \
     procps \
+    patch \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Puppeteer to skip automatic download during npm install (we download it explicitly below)
@@ -87,8 +88,14 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install production dependencies only
-RUN npm ci --omit=dev && npm cache clean --force
+# Backport whatsapp-web.js#201832 (WA Web 2026-07 `_serialized`→`$1` id rename) into the installed
+# package. Copied before `npm ci` so the postinstall hook can apply it too; the explicit strict run
+# below is authoritative and self-disables once wwebjs ships the fix upstream. See
+# scripts/patch-wwebjs-201832.js — without this, getChats/getChatHistory throw `r: r`.
+COPY scripts/patch-wwebjs-201832.js scripts/wwebjs-201832.patch ./scripts/
+
+# Install production dependencies only, then apply the wwebjs backport patcher (needs `patch`).
+RUN npm ci --omit=dev && node scripts/patch-wwebjs-201832.js && npm cache clean --force
 
 # amd64: download Chrome for Testing via Puppeteer and symlink it.
 # arm64: use Debian's chromium installed above (CfT has no linux-arm64 build).
