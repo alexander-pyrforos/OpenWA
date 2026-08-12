@@ -3,7 +3,12 @@ import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
 import { NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SessionService, ACK_RECONCILE_DELAY_MS, EngineInitTimeoutError } from './session.service';
+import {
+  SessionService,
+  ACK_RECONCILE_DELAY_MS,
+  EngineInitTimeoutError,
+  selectStaleReadySessions,
+} from './session.service';
 import { Session, SessionStatus } from './entities/session.entity';
 import { Message, MessageStatus } from '../message/entities/message.entity';
 import { MessageBatch } from '../message/entities/message-batch.entity';
@@ -165,6 +170,17 @@ describe('SessionService', () => {
     }).compile();
 
     service = module.get<SessionService>(SessionService);
+  });
+
+  // onModuleInit arms the staleness watchdog (a real, unref'd setInterval). Clear any armed timer
+  // after each test so a test that boots the service (e.g. onModuleInit) can't leak a live interval
+  // into a later test. Inner watchdog tests clear their own timer first; this is a backstop.
+  afterEach(() => {
+    const internals = service as unknown as { watchdogTimer?: ReturnType<typeof setInterval> };
+    if (internals.watchdogTimer) {
+      clearInterval(internals.watchdogTimer);
+      internals.watchdogTimer = undefined;
+    }
   });
 
   // ── shutdown ──────────────────────────────────────────────────────
@@ -2774,6 +2790,252 @@ describe('SessionService', () => {
       await service.onApplicationBootstrap();
 
       expect(startSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── staleness watchdog (24/7: auto-recover dead-but-ready sessions) ──────────────────────────
+  describe('staleness watchdog', () => {
+    type WatchdogInternals = {
+      engines: Map<string, unknown>;
+      recoveringSessions: Set<string>;
+      initializingSessions: Set<string>;
+      stoppingSessions: Set<string>;
+      reconnectStates: Map<string, { timer: NodeJS.Timeout | null }>;
+      watchdogTimer?: ReturnType<typeof setInterval>;
+      shutdownService?: { isShuttingDown: () => boolean };
+      runWatchdog: (staleAfterMs: number) => Promise<void>;
+      recoverStaleSession: (id: string, name: string, staleAfterMs: number) => Promise<void>;
+      startWatchdog: () => void;
+    };
+    const internals = (): WatchdogInternals => service as unknown as WatchdogInternals;
+    const HOUR = 60 * 60 * 1000;
+    const readySession = (id: string, ageMs: number): Session =>
+      createMockSession({
+        id,
+        status: SessionStatus.READY,
+        phone: '123456',
+        lastActiveAt: new Date(Date.now() - ageMs),
+        connectedAt: new Date(Date.now() - ageMs),
+      });
+
+    afterEach(() => {
+      const i = internals();
+      if (i.watchdogTimer) {
+        clearInterval(i.watchdogTimer);
+        i.watchdogTimer = undefined;
+      }
+      delete process.env.SESSION_STALE_AFTER_MS;
+      delete process.env.SESSION_WATCHDOG_INTERVAL_MS;
+    });
+
+    describe('selectStaleReadySessions (pure selector)', () => {
+      it('selects only READY sessions whose lastActiveAt is older than the threshold', () => {
+        const now = new Date('2026-07-27T12:00:00Z');
+        const old = createMockSession({
+          id: 'old',
+          status: SessionStatus.READY,
+          lastActiveAt: new Date(now.getTime() - 7 * HOUR),
+        });
+        const fresh = createMockSession({
+          id: 'fresh',
+          status: SessionStatus.READY,
+          lastActiveAt: new Date(now.getTime() - 10 * 60 * 1000),
+        });
+        const disconnected = createMockSession({
+          id: 'disc',
+          status: SessionStatus.DISCONNECTED,
+          lastActiveAt: new Date(now.getTime() - 99 * HOUR),
+        });
+        const nullLastActive = createMockSession({ id: 'null', status: SessionStatus.READY, lastActiveAt: null });
+
+        const stale = selectStaleReadySessions([old, fresh, disconnected, nullLastActive], now, 6 * HOUR);
+
+        expect(stale.map(s => s.id)).toEqual(['old']);
+      });
+
+      it('returns [] when the watchdog is disabled (staleAfterMs <= 0)', () => {
+        const old = createMockSession({
+          status: SessionStatus.READY,
+          lastActiveAt: new Date(0),
+        });
+        expect(selectStaleReadySessions([old], new Date(), 0)).toEqual([]);
+      });
+    });
+
+    describe('recoverStaleSession', () => {
+      it('force-kills + starts a stale session that has a live engine, then clears the re-entry guard', async () => {
+        const i = internals();
+        i.engines.set('sess-uuid-1', mockEngine);
+        const forceKill = jest.spyOn(service, 'forceKill').mockResolvedValue(createMockSession());
+        const start = jest.spyOn(service, 'start').mockResolvedValue(createMockSession());
+
+        await i.recoverStaleSession('sess-uuid-1', 'test-session', 6 * HOUR);
+
+        expect(forceKill).toHaveBeenCalledTimes(1);
+        expect(start).toHaveBeenCalledTimes(1);
+        expect(i.recoveringSessions.has('sess-uuid-1')).toBe(false); // cleared in finally
+      });
+
+      it('skips recovery when no live engine is in the map (READY-in-DB-but-no-engine)', async () => {
+        const i = internals();
+        // engines map intentionally empty
+        const forceKill = jest.spyOn(service, 'forceKill').mockResolvedValue(createMockSession());
+
+        await i.recoverStaleSession('sess-uuid-1', 'test-session', 6 * HOUR);
+
+        expect(forceKill).not.toHaveBeenCalled();
+      });
+
+      it('does not double-recover when a recovery is already in flight (re-entry guard)', async () => {
+        const i = internals();
+        i.engines.set('sess-uuid-1', mockEngine);
+        i.recoveringSessions.add('sess-uuid-1');
+        const forceKill = jest.spyOn(service, 'forceKill').mockResolvedValue(createMockSession());
+
+        await i.recoverStaleSession('sess-uuid-1', 'test-session', 6 * HOUR);
+
+        expect(forceKill).not.toHaveBeenCalled();
+        // The in-flight guard is owned by the caller; recoverStaleSession must not remove a mark
+        // it did not set.
+        expect(i.recoveringSessions.has('sess-uuid-1')).toBe(true);
+        i.recoveringSessions.delete('sess-uuid-1');
+      });
+
+      it('skips when an event-driven reconnect is already pending (let the normal path run)', async () => {
+        const i = internals();
+        i.engines.set('sess-uuid-1', mockEngine);
+        const pendingTimer = setTimeout(() => undefined, 100_000);
+        i.reconnectStates.set('sess-uuid-1', { timer: pendingTimer });
+        const forceKill = jest.spyOn(service, 'forceKill').mockResolvedValue(createMockSession());
+
+        try {
+          await i.recoverStaleSession('sess-uuid-1', 'test-session', 6 * HOUR);
+          expect(forceKill).not.toHaveBeenCalled();
+        } finally {
+          clearTimeout(pendingTimer);
+        }
+      });
+
+      it('skips when a start()/stop() is in flight', async () => {
+        const i = internals();
+        i.engines.set('sess-uuid-1', mockEngine);
+        i.initializingSessions.add('sess-uuid-1');
+        const forceKill = jest.spyOn(service, 'forceKill').mockResolvedValue(createMockSession());
+
+        await i.recoverStaleSession('sess-uuid-1', 'test-session', 6 * HOUR);
+
+        expect(forceKill).not.toHaveBeenCalled();
+        i.initializingSessions.delete('sess-uuid-1');
+      });
+
+      it('clears the re-entry guard even when recovery throws', async () => {
+        const i = internals();
+        i.engines.set('sess-uuid-1', mockEngine);
+        jest.spyOn(service, 'forceKill').mockResolvedValue(createMockSession());
+        jest.spyOn(service, 'start').mockRejectedValue(new Error('start failed'));
+
+        await expect(i.recoverStaleSession('sess-uuid-1', 'test-session', 6 * HOUR)).resolves.toBeUndefined();
+
+        expect(i.recoveringSessions.has('sess-uuid-1')).toBe(false);
+      });
+
+      it('skips while the process is shutting down', async () => {
+        const i = internals();
+        i.engines.set('sess-uuid-1', mockEngine);
+        i.shutdownService = { isShuttingDown: () => true };
+        const forceKill = jest.spyOn(service, 'forceKill').mockResolvedValue(createMockSession());
+
+        await i.recoverStaleSession('sess-uuid-1', 'test-session', 6 * HOUR);
+
+        expect(forceKill).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('runWatchdog', () => {
+      it('recovers stale READY sessions loaded from the repository', async () => {
+        const i = internals();
+        (repository.find as jest.Mock).mockResolvedValue([readySession('sess-uuid-1', 7 * HOUR)]);
+        const recover = jest.spyOn(i, 'recoverStaleSession').mockResolvedValue(undefined);
+
+        await i.runWatchdog(6 * HOUR);
+
+        expect(recover).toHaveBeenCalledWith('sess-uuid-1', 'test-session', 6 * HOUR);
+      });
+
+      it('recovers nothing when every READY session is fresh', async () => {
+        const i = internals();
+        (repository.find as jest.Mock).mockResolvedValue([readySession('sess-uuid-1', 60 * 1000)]);
+        const recover = jest.spyOn(i, 'recoverStaleSession').mockResolvedValue(undefined);
+
+        await i.runWatchdog(6 * HOUR);
+
+        expect(recover).not.toHaveBeenCalled();
+      });
+
+      it('skips the sweep entirely while shutting down (no repository read)', async () => {
+        const i = internals();
+        i.shutdownService = { isShuttingDown: () => true };
+        (repository.find as jest.Mock).mockResolvedValue([readySession('sess-uuid-1', 99 * HOUR)]);
+
+        await i.runWatchdog(6 * HOUR);
+
+        expect(repository.find).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('startWatchdog / config', () => {
+      it('is a no-op (no timer armed) when SESSION_STALE_AFTER_MS=0', () => {
+        process.env.SESSION_STALE_AFTER_MS = '0';
+        const i = internals();
+
+        i.startWatchdog();
+
+        expect(i.watchdogTimer).toBeUndefined();
+      });
+
+      it('arms an interval timer when enabled and the sweep fires runWatchdog', () => {
+        jest.useFakeTimers();
+        try {
+          process.env.SESSION_STALE_AFTER_MS = String(6 * HOUR);
+          process.env.SESSION_WATCHDOG_INTERVAL_MS = '60000';
+          const i = internals();
+
+          i.startWatchdog();
+          expect(i.watchdogTimer).toBeDefined();
+
+          const run = jest.spyOn(i, 'runWatchdog').mockResolvedValue(undefined);
+          jest.advanceTimersByTime(60_000);
+
+          expect(run).toHaveBeenCalled();
+        } finally {
+          const i = internals();
+          if (i.watchdogTimer) {
+            clearInterval(i.watchdogTimer);
+            i.watchdogTimer = undefined;
+          }
+          jest.clearAllTimers();
+          jest.useRealTimers();
+        }
+      });
+    });
+
+    describe('onModuleDestroy clears the watchdog', () => {
+      it('clears the watchdog timer on teardown', async () => {
+        process.env.SESSION_STALE_AFTER_MS = String(6 * HOUR);
+        process.env.SESSION_WATCHDOG_INTERVAL_MS = '60000';
+        const i = internals();
+        i.startWatchdog();
+        const timer = i.watchdogTimer;
+        expect(timer).toBeDefined();
+
+        const clearSpy = jest.spyOn(globalThis, 'clearInterval');
+
+        await service.onModuleDestroy();
+
+        expect(clearSpy).toHaveBeenCalledWith(timer);
+        expect(i.watchdogTimer).toBeUndefined();
+        clearSpy.mockRestore();
+      });
     });
   });
 });

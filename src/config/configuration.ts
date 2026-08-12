@@ -126,6 +126,16 @@ export default () => ({
     // 0 = unlimited/backwards-compatible. Set to a positive integer to cap concurrently running or
     // initializing WhatsApp engines, which protects memory/Chromium-constrained deployments.
     maxConcurrent: parseInt(process.env.MAX_CONCURRENT_SESSIONS || '0', 10),
+    // Staleness watchdog: a READY session whose lastActivityAt is older than this (ms) is auto
+    // force-killed + restarted. Recovers from a silent WhatsApp-socket death — whatsapp-web.js can
+    // lose the socket without firing onDisconnected/onStateChanged, leaving status "ready" with a
+    // frozen lastActiveAt indefinitely (proven 2026-07-25: a sales session hung for ~2 days). The
+    // event-driven scheduleReconnect() never fires in that case, so this sweeps independently.
+    // 0 = disable the watchdog. Default 6h.
+    staleAfterMs: parseInt(process.env.SESSION_STALE_AFTER_MS || '21600000', 10),
+    // How often the watchdog sweeps READY sessions for staleness. Default 5min; clamped to a 60s
+    // minimum at the resolver so a misconfigured small value can't busy-loop.
+    watchdogIntervalMs: parseInt(process.env.SESSION_WATCHDOG_INTERVAL_MS || '300000', 10),
   },
 
   // Webhook configuration

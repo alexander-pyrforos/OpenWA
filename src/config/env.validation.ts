@@ -127,6 +127,8 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'REDIS_CONNECT_TIMEOUT_MS',
     'MAX_CONCURRENT_SESSIONS', // 0 = unlimited
     'INGRESS_INSTANCE_TTL',
+    'SESSION_STALE_AFTER_MS', // 0 = disable the staleness watchdog
+    'SESSION_WATCHDOG_INTERVAL_MS',
   ]) {
     checkNonNegativeInt(key);
   }

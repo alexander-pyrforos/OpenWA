@@ -100,6 +100,58 @@ export function resolveMaxConcurrentSessions(configService?: Pick<ConfigService,
   return Math.floor(configured);
 }
 
+// ── staleness watchdog ─────────────────────────────────────────────────────
+// whatsapp-web.js can lose its WhatsApp socket WITHOUT firing onDisconnected/onStateChanged,
+// leaving a session at status "ready" with a frozen lastActiveAt indefinitely (the event-driven
+// scheduleReconnect() never triggers). The watchdog sweeps READY sessions and force-kills +
+// restarts any whose lastActivityAt is older than this threshold. 0 disables it.
+const DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1000; // 6h
+const DEFAULT_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000; // 5min
+export const MIN_WATCHDOG_INTERVAL_MS = 60_000;
+
+const parseNonNegativeInt = (raw: unknown, def: number): number => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : def;
+};
+
+/**
+ * Resolve the watchdog knobs, preferring the ConfigService-loaded set (configuration.ts builds
+ * `sessions.*`) and falling back to a live `process.env` read when ConfigService is absent — e.g.
+ * a unit test that constructs the service without the global ConfigModule. Mirrors
+ * resolveFeatureFlags(): env doesn't change during a process lifetime, so the snapshot and a
+ * live read are equivalent in production; the fallback preserves the live-read behaviour tests
+ * rely on when they mutate `process.env`.
+ */
+export function resolveWatchdogConfig(configService?: Pick<ConfigService, 'get'>): {
+  staleAfterMs: number;
+  intervalMs: number;
+} {
+  const sessions = configService?.get<{ staleAfterMs?: unknown; watchdogIntervalMs?: unknown }>('sessions');
+  const staleAfterMs =
+    sessions?.staleAfterMs !== undefined
+      ? parseNonNegativeInt(sessions.staleAfterMs, DEFAULT_STALE_AFTER_MS)
+      : parseNonNegativeInt(process.env.SESSION_STALE_AFTER_MS, DEFAULT_STALE_AFTER_MS);
+  const intervalMs =
+    sessions?.watchdogIntervalMs !== undefined
+      ? parseNonNegativeInt(sessions.watchdogIntervalMs, DEFAULT_WATCHDOG_INTERVAL_MS)
+      : parseNonNegativeInt(process.env.SESSION_WATCHDOG_INTERVAL_MS, DEFAULT_WATCHDOG_INTERVAL_MS);
+  return { staleAfterMs, intervalMs };
+}
+
+/**
+ * Pure selector for the watchdog: of the given sessions, return those that are READY and whose
+ * lastActivityAt is strictly older than `staleAfterMs` from `now`. Exported + parameterised so the
+ * staleness math is unit-testable without a DB or timers. A READY session always has a non-null
+ * lastActivityAt (onReady sets it), so null is skipped defensively rather than treated as stale.
+ */
+export function selectStaleReadySessions(sessions: Session[], now: Date, staleAfterMs: number): Session[] {
+  if (staleAfterMs <= 0) return [];
+  return sessions.filter(s => {
+    if (s.status !== SessionStatus.READY || s.lastActiveAt == null) return false;
+    return now.getTime() - s.lastActiveAt.getTime() > staleAfterMs;
+  });
+}
+
 /**
  * Distinguishes a wedged-initialization timeout from a real engine.initialize() rejection. Only the
  * timeout case is handled inside initializeEngine(); real rejections must propagate untouched so the
@@ -131,6 +183,14 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
 
   // Reconnection state per session
   private reconnectStates: Map<string, ReconnectState> = new Map();
+
+  // Staleness watchdog sweep timer (unref'd). Cleared in onModuleDestroy. null when the watchdog
+  // is disabled (SESSION_STALE_AFTER_MS=0) or not yet started.
+  private watchdogTimer?: ReturnType<typeof setInterval>;
+  // Sessions a watchdog recovery is currently force-killing + restarting. Guards against the next
+  // sweep re-entering recoverStaleSession() for a session whose prior recovery is still in flight
+  // (forceKill+start is awaited async; the interval is unref'd but the callback still re-fires).
+  private readonly recoveringSessions = new Set<string>();
 
   // Last session.status value broadcast per session. Some engines signal one transition via BOTH
   // onStateChanged and a dedicated callback (onQRCode/onDisconnected), so this guards both the WS emit
@@ -200,6 +260,110 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         affected: result.affected,
       });
     }
+
+    // Arm the staleness watchdog after the status reset. It only ever acts on READY sessions, and a
+    // fresh boot has none until start() runs (onApplicationBootstrap auto-start or a manual start),
+    // so arming it here is safe — the first sweep fires watchdogIntervalMs later, by which time
+    // engines are up. Default ON; SESSION_STALE_AFTER_MS=0 disables it (startWatchdog is a no-op).
+    this.startWatchdog();
+  }
+
+  /**
+   * Arm the periodic staleness sweep. No-op when the watchdog is disabled (staleAfterMs <= 0). The
+   * timer is unref'd (like the webhook/audit cleanup timers) so it never keeps the event loop alive
+   * on its own, and the sweep interval is clamped to a 60s minimum so a misconfigured small value
+   * can't busy-loop recoveries.
+   */
+  private startWatchdog(): void {
+    const { staleAfterMs, intervalMs } = resolveWatchdogConfig(this.configService);
+    if (staleAfterMs <= 0) {
+      this.logger.log('Session staleness watchdog disabled (SESSION_STALE_AFTER_MS=0)', {
+        action: 'watchdog_disabled',
+      });
+      return;
+    }
+    const sweep = Math.max(MIN_WATCHDOG_INTERVAL_MS, intervalMs);
+    this.watchdogTimer = setInterval(() => {
+      void this.runWatchdog(staleAfterMs);
+    }, sweep);
+    this.watchdogTimer.unref?.();
+    this.logger.log(
+      `Session staleness watchdog armed: threshold=${Math.round(staleAfterMs / 1000)}s, sweep=${Math.round(sweep / 1000)}s`,
+      { action: 'watchdog_armed', staleAfterMs, sweepMs: sweep },
+    );
+  }
+
+  /**
+   * One watchdog sweep: find READY sessions whose lastActivityAt is older than staleAfterMs and
+   * recover each (force-kill + start) on its own async chain. Fire-and-forget per session so one
+   * slow recovery (a wedged Chromium taking 10s to force-destroy) doesn't block the sweep or the
+   * recovery of sibling stale sessions.
+   */
+  private async runWatchdog(staleAfterMs: number): Promise<void> {
+    if (this.shutdownService?.isShuttingDown()) return;
+    let sessions: Session[];
+    try {
+      sessions = await this.sessionRepository.find({ where: { status: SessionStatus.READY } });
+    } catch (error: unknown) {
+      this.logger.warn('Watchdog sweep skipped: failed to load READY sessions', {
+        action: 'watchdog_sweep_error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    const stale = selectStaleReadySessions(sessions, new Date(), staleAfterMs);
+    for (const session of stale) {
+      void this.recoverStaleSession(session.id, session.name, staleAfterMs);
+    }
+  }
+
+  /**
+   * Recover one stale READY session by force-killing + restarting it — the same proven prod
+   * sequence used for a manual force-kill → start. forceKill() SIGKILLs the wedged Chromium
+   * (time-bounded teardownEngineSafely, so a hung engine can't wedge this), then start() re-inits
+   * with the saved auth (no QR, creds valid). Guards prevent racing an in-flight start/reconnect
+   * or re-entering a recovery already in progress.
+   */
+  private async recoverStaleSession(id: string, name: string, staleAfterMs: number): Promise<void> {
+    // Re-entry: a prior sweep is already recovering this session (forceKill+start in flight).
+    if (this.recoveringSessions.has(id)) return;
+    // An event-driven reconnect is already pending (onDisconnected fired for a normal drop) —
+    // let it run rather than double-init the engine.
+    if (this.reconnectStates.get(id)?.timer) return;
+    // A start()/stop()/delete() is in flight — don't race it.
+    if (this.initializingSessions.has(id) || this.stoppingSessions.has(id)) return;
+    if (this.shutdownService?.isShuttingDown()) return;
+    // No live engine in memory: the proven dead-but-ready case has a hung Chromium IN the map.
+    // A READY-in-DB-but-no-engine row is an inconsistent state the boot reset + autoStart path
+    // covers; don't start() blindly here (the operator may have left it intentionally down).
+    if (!this.engines.has(id)) {
+      this.logger.warn(
+        `Stale READY session has no live engine; skipping watchdog recovery (boot reset + autoStart cover this)`,
+        { sessionId: id, action: 'watchdog_stale_no_engine', sessionName: name },
+      );
+      return;
+    }
+
+    this.recoveringSessions.add(id);
+    try {
+      this.logger.warn(
+        `Session stale (ready but no activity for >${Math.round(staleAfterMs / 1000)}s), auto-recovering`,
+        { sessionId: id, sessionName: name, action: 'watchdog_stale_recover', staleAfterMs },
+      );
+      await this.forceKill(id);
+      await this.start(id);
+    } catch (error: unknown) {
+      // Don't leave the session wedged at a half-state: the next sweep retries. forceKill already
+      // reconciled the Map + set DISCONNECTED on its own; a start() failure surfaces via the
+      // session's FAILED status + lastError. recoveringSessions is cleared in finally regardless.
+      this.logger.error(
+        `Watchdog recovery failed for session: ${name}`,
+        error instanceof Error ? error.message : String(error),
+        { sessionId: id, action: 'watchdog_recover_failed' },
+      );
+    } finally {
+      this.recoveringSessions.delete(id);
+    }
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -239,7 +403,13 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   }
 
   async onModuleDestroy(): Promise<void> {
-    // Stop reconnect timers FIRST so nothing reschedules mid-teardown, and so this always runs even
+    // Stop the watchdog sweep FIRST so a mid-teardown tick can't schedule a recovery that races
+    // the engine teardown below (and so this always runs even if a destroy() hangs).
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
+    // Stop reconnect timers so nothing reschedules mid-teardown, and so this always runs even
     // if an engine.destroy() below hangs or throws.
     for (const [, state] of this.reconnectStates) {
       if (state.timer) {
