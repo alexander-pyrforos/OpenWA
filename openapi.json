@@ -2287,6 +2287,9 @@
           },
           "404": {
             "description": "Message not found"
+          },
+          "409": {
+            "description": "The id is a prefix of more than one stored message (ambiguous). Provide the full waMessageId to disambiguate."
           }
         },
         "summary": "Get a single message by its WhatsApp message id (no session required)",

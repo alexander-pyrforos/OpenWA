@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import type { Response } from 'express';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { BadRequestException, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
 import { MessageService } from './message.service';
 import { Message, MessageDirection, MessageStatus } from './entities/message.entity';
 import { SessionService } from '../session/session.service';
@@ -496,10 +496,12 @@ describe('MessageService', () => {
   // ── getMessageByWaMessageId (session-less single-message lookup) ──
 
   describe('getMessageByWaMessageId', () => {
+    const fullId = 'false_120363029044634721@g.us_3A3077A960963FD1938C_247600737464461@lid';
+    const truncatedId = 'false_120363029044634721@g.us_3A3077A960963FD1938C_2476007374644';
     const row = {
       id: 'msg-uuid-1',
       sessionId: 'sess-1',
-      waMessageId: 'false_120363029044634721@g.us_3A3077A960963FD1938C_2476007374644',
+      waMessageId: fullId,
       chatId: '120363029044634721@g.us',
       from: '62811@c.us',
       to: '120363029044634721@g.us',
@@ -507,32 +509,85 @@ describe('MessageService', () => {
       type: 'text',
     } as Message;
 
-    it('returns the message row when found (no session scope)', async () => {
+    // A query-builder fake for the truncated-id prefix fallback. Only the chain the service uses
+    // (where → andWhere? → getMany) is mocked; getMany returns the supplied rows.
+    const makePrefixQb = (rows: Message[]) => {
+      const qb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(rows),
+      };
+      return qb;
+    };
+
+    it('returns the message row on exact match (no session scope)', async () => {
       findOne.mockResolvedValueOnce(row);
-      await expect(service.getMessageByWaMessageId(row.waMessageId)).resolves.toBe(row);
-      expect(findOne).toHaveBeenCalledWith({ where: { waMessageId: row.waMessageId } });
+      await expect(service.getMessageByWaMessageId(fullId)).resolves.toBe(row);
+      expect(findOne).toHaveBeenCalledWith({ where: { waMessageId: fullId } });
     });
 
-    it('throws NotFound when no row matches the waMessageId', async () => {
+    it('throws NotFound when no row matches and there is no prefix match either', async () => {
       findOne.mockResolvedValueOnce(null);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(makePrefixQb([]));
       await expect(service.getMessageByWaMessageId('NOPE')).rejects.toThrow(NotFoundException);
     });
 
-    it('returns the row when the key allowlist covers the row session', async () => {
+    it('returns the row when the key allowlist covers the row session (scope applied in the query)', async () => {
       findOne.mockResolvedValueOnce(row);
-      await expect(service.getMessageByWaMessageId(row.waMessageId, ['sess-1', 'sess-2'])).resolves.toBe(row);
+      await expect(service.getMessageByWaMessageId(fullId, ['sess-1', 'sess-2'])).resolves.toBe(row);
+      // Scope is enforced inside the findOne WHERE, not post-hoc, so sessionId is part of the query.
+      const where = (findOne.mock.calls.at(-1) as [{ where: Record<string, unknown> }] | undefined)?.[0]?.where;
+      expect(where?.waMessageId).toBe(fullId);
+      expect(where?.sessionId).toBeTruthy();
     });
 
     it('returns the row for an unrestricted key (empty allowlist)', async () => {
       findOne.mockResolvedValueOnce(row);
-      await expect(service.getMessageByWaMessageId(row.waMessageId, [])).resolves.toBe(row);
+      await expect(service.getMessageByWaMessageId(fullId, [])).resolves.toBe(row);
+      expect(findOne).toHaveBeenCalledWith({ where: { waMessageId: fullId } });
     });
 
     it('reports 404 (not 403) when a scoped key reads a message outside its sessions', async () => {
-      findOne.mockResolvedValueOnce(row);
-      // A scoped key for sess-2 only — the row belongs to sess-1. The caller must not learn the row
-      // exists, so this is a NotFoundException rather than a ForbiddenException.
-      await expect(service.getMessageByWaMessageId(row.waMessageId, ['sess-2'])).rejects.toThrow(NotFoundException);
+      // Scope is enforced inside the query (WHERE sessionId IN (...)), so a query scoped to sess-2
+      // finds nothing for a sess-1 row — both the exact path and the prefix path come back empty, and
+      // the caller learns only a 404 (never a 403, never the row's existence).
+      findOne.mockResolvedValueOnce(null);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(makePrefixQb([]));
+      await expect(service.getMessageByWaMessageId(fullId, ['sess-2'])).rejects.toThrow(NotFoundException);
+      const where = (findOne.mock.calls.at(-1) as [{ where: Record<string, unknown> }] | undefined)?.[0]?.where;
+      expect(where?.sessionId).toBeTruthy();
+    });
+
+    it('resolves a truncated id via a unique prefix match when the exact match misses', async () => {
+      // The caller stored a VARCHAR(64)-clipped id; the DB now holds the longer full id. Exact match
+      // misses, the prefix LIKE finds exactly one row, and that row is returned.
+      const qb = makePrefixQb([row]);
+      findOne.mockResolvedValueOnce(null);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+      await expect(service.getMessageByWaMessageId(truncatedId)).resolves.toBe(row);
+      // LIKE pattern is the LIKE-escaped id followed by a single trailing % wildcard, ESCAPE '\'.
+      expect(qb.where).toHaveBeenCalledWith(`m.waMessageId LIKE :pattern ESCAPE '\\'`, {
+        pattern: 'false\\_120363029044634721@g.us\\_3A3077A960963FD1938C\\_2476007374644%',
+      });
+    });
+
+    it('rejects an ambiguous prefix (multiple stored ids share it) with 409 Conflict', async () => {
+      const other = { ...row, id: 'msg-uuid-2', waMessageId: fullId + '9@lid' };
+      const qb = makePrefixQb([row, other]);
+      findOne.mockResolvedValueOnce(null);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+      await expect(service.getMessageByWaMessageId(truncatedId)).rejects.toThrow(ConflictException);
+    });
+
+    it('does not treat `_` in the id as a LIKE wildcard on the prefix path', async () => {
+      // A literal id with no real match must not hit via accidental single-char `_` wildcards.
+      const qb = makePrefixQb([]);
+      findOne.mockResolvedValueOnce(null);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+      await expect(service.getMessageByWaMessageId('false_NOPE@g.us_X_Y')).rejects.toThrow(NotFoundException);
+      expect(qb.where).toHaveBeenCalledWith(`m.waMessageId LIKE :pattern ESCAPE '\\'`, {
+        pattern: 'false\\_NOPE@g.us\\_X\\_Y%',
+      });
     });
   });
 

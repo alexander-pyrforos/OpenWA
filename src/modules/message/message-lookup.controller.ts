@@ -27,6 +27,11 @@ export class MessageLookupController {
     description: 'WhatsApp message id, e.g. false_120363400287378579@g.us_AC60FA8596471EA47F3EBA73160CEE76_2',
   })
   @ApiResponse({ status: 200, description: 'The message', type: Message })
+  @ApiResponse({
+    status: 409,
+    description:
+      'The id is a prefix of more than one stored message (ambiguous). Provide the full waMessageId to disambiguate.',
+  })
   @ApiResponse({ status: 404, description: 'Message not found' })
   async getMessage(@Param('waMessageId') waMessageId: string, @CurrentApiKey() apiKey?: ApiKey): Promise<Message> {
     return this.messageService.getMessageByWaMessageId(waMessageId, apiKey?.allowedSessions ?? undefined);

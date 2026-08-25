@@ -1,7 +1,7 @@
-import { Injectable, BadRequestException, NotFoundException, Optional } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ConflictException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { Response } from 'express';
 import { SessionService } from '../session/session.service';
 import { SendTextMessageDto, SendMediaMessageDto, SendAudioMessageDto, MessageResponseDto } from './dto';
@@ -325,16 +325,43 @@ export class MessageService {
    * scope by path. A key with a non-empty `allowedSessions` that doesn't cover the row's session is
    * reported as 404 — not 403 — so a scoped key cannot probe for message ids outside its scope by
    * distinguishing 403 from 404.
+   *
+   * Truncated-id fallback: downstream systems (the ERP extractor among them) have historically stored
+   * `waMessageId` in a `VARCHAR(64)` column, which clips the full id. The current wwebjs-era id is
+   * longer than 64 chars — it appends a longer per-message counter and an `@lid` suffix — so the
+   * caller's stored id is a strict prefix of what this DB now holds. An exact match misses; we then
+   * resolve by prefix match and require a unique hit. A non-unique prefix (a short counter prefix can
+   * collide across messages from the same sender in the same chat) is rejected as 409 rather than
+   * risking the wrong message. Full, untruncated ids still resolve on the exact-match fast path.
    */
   async getMessageByWaMessageId(waMessageId: string, allowedSessions?: string[] | null): Promise<Message> {
-    const row = await this.messageRepository.findOne({ where: { waMessageId } });
-    if (!row) {
-      throw new NotFoundException(`Message ${waMessageId} not found`);
+    const scoped = allowedSessions && allowedSessions.length > 0 ? allowedSessions : null;
+
+    const exact = await this.messageRepository.findOne({
+      where: scoped ? { waMessageId, sessionId: In(scoped) } : { waMessageId },
+    });
+    if (exact) {
+      return exact;
     }
-    if (allowedSessions && allowedSessions.length > 0 && !allowedSessions.includes(row.sessionId)) {
-      throw new NotFoundException(`Message ${waMessageId} not found`);
+
+    // Escape LIKE metacharacters (`\`, `%`, `_`) so the caller's id is matched literally as a prefix.
+    const escaped = waMessageId.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const qb = this.messageRepository
+      .createQueryBuilder('m')
+      .where(`m.waMessageId LIKE :pattern ESCAPE '\\'`, { pattern: `${escaped}%` });
+    if (scoped) {
+      qb.andWhere('m.sessionId IN (:...scoped)', { scoped });
     }
-    return row;
+    const prefixRows = await qb.getMany();
+    if (prefixRows.length === 1) {
+      return prefixRows[0];
+    }
+    if (prefixRows.length > 1) {
+      throw new ConflictException(
+        `waMessageId "${waMessageId}" matches ${prefixRows.length} stored messages; provide the full id to disambiguate`,
+      );
+    }
+    throw new NotFoundException(`Message ${waMessageId} not found`);
   }
 
   /**
