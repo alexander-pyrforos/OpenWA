@@ -24,6 +24,7 @@
                 "session_qr_generated",
                 "session_connected",
                 "session_disconnected",
+                "session_history_backfill",
                 "message_sent",
                 "message_failed",
                 "webhook_created",
@@ -541,6 +542,101 @@
           }
         },
         "summary": "Force-kill a stuck session (SIGKILL its wedged engine, then tear it down)",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/sessions/{id}/backfill-history": {
+      "post": {
+        "operationId": "SessionController_startBackfill",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Session ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "batchSize",
+            "required": false,
+            "in": "query",
+            "description": "Messages per chat (default 50, max 1000)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "rateMs",
+            "required": false,
+            "in": "query",
+            "description": "Throttle between chats in ms (default 1500)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "includeMedia",
+            "required": false,
+            "in": "query",
+            "description": "Fetch media too (default false)",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "chatId",
+            "required": false,
+            "in": "query",
+            "description": "Restrict to these chat ids (repeatable: ?chatId=a&chatId=b)",
+            "schema": {}
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Backfill started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Session has no live engine — start the session first"
+          },
+          "409": {
+            "description": "A backfill is already running for this session"
+          }
+        },
+        "summary": "Backfill chat history with author metadata (in-process, fire-and-forget)",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "get": {
+        "operationId": "SessionController_getBackfillStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Session ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current backfill job state, or null if none has run"
+          }
+        },
+        "summary": "History backfill job status for a session",
         "tags": [
           "sessions"
         ]
@@ -1863,6 +1959,42 @@
         ]
       }
     },
+    "/api/sessions/{sessionId}/messages/{waMessageId}/media": {
+      "get": {
+        "operationId": "MessageController_getMedia",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "waMessageId",
+            "required": true,
+            "in": "path",
+            "description": "WhatsApp message id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media bytes (image/video/audio/document)"
+          },
+          "404": {
+            "description": "Message or downloadable media not found"
+          }
+        },
+        "summary": "Download a single message's media on demand (history/omitted), cached in S3",
+        "tags": [
+          "messages"
+        ]
+      }
+    },
     "/api/sessions/{sessionId}/messages/{chatId}/history": {
       "get": {
         "description": "Reads messages directly from the WhatsApp client for the given chat, bypassing the local DB. Useful for retrieving messages that arrived before the gateway was started.",
@@ -2123,6 +2255,41 @@
           }
         },
         "summary": "Cancel a running batch",
+        "tags": [
+          "messages"
+        ]
+      }
+    },
+    "/api/messages/{waMessageId}": {
+      "get": {
+        "operationId": "MessageLookupController_getMessage",
+        "parameters": [
+          {
+            "name": "waMessageId",
+            "required": true,
+            "in": "path",
+            "description": "WhatsApp message id, e.g. false_120363400287378579@g.us_AC60FA8596471EA47F3EBA73160CEE76_2",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Message not found"
+          }
+        },
+        "summary": "Get a single message by its WhatsApp message id (no session required)",
         "tags": [
           "messages"
         ]
@@ -5279,6 +5446,15 @@
             "schema": {
               "type": "number"
             }
+          },
+          {
+            "name": "hasMedia",
+            "required": false,
+            "in": "query",
+            "description": "Only return messages that have media attachments",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -6568,6 +6744,10 @@
           "totalMessages",
           "statusUrl"
         ]
+      },
+      "Message": {
+        "type": "object",
+        "properties": {}
       },
       "CreateTemplateDto": {
         "type": "object",

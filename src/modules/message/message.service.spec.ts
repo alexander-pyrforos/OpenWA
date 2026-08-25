@@ -493,6 +493,49 @@ describe('MessageService', () => {
     });
   });
 
+  // ── getMessageByWaMessageId (session-less single-message lookup) ──
+
+  describe('getMessageByWaMessageId', () => {
+    const row = {
+      id: 'msg-uuid-1',
+      sessionId: 'sess-1',
+      waMessageId: 'false_120363029044634721@g.us_3A3077A960963FD1938C_2476007374644',
+      chatId: '120363029044634721@g.us',
+      from: '62811@c.us',
+      to: '120363029044634721@g.us',
+      body: 'hi',
+      type: 'text',
+    } as Message;
+
+    it('returns the message row when found (no session scope)', async () => {
+      findOne.mockResolvedValueOnce(row);
+      await expect(service.getMessageByWaMessageId(row.waMessageId)).resolves.toBe(row);
+      expect(findOne).toHaveBeenCalledWith({ where: { waMessageId: row.waMessageId } });
+    });
+
+    it('throws NotFound when no row matches the waMessageId', async () => {
+      findOne.mockResolvedValueOnce(null);
+      await expect(service.getMessageByWaMessageId('NOPE')).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns the row when the key allowlist covers the row session', async () => {
+      findOne.mockResolvedValueOnce(row);
+      await expect(service.getMessageByWaMessageId(row.waMessageId, ['sess-1', 'sess-2'])).resolves.toBe(row);
+    });
+
+    it('returns the row for an unrestricted key (empty allowlist)', async () => {
+      findOne.mockResolvedValueOnce(row);
+      await expect(service.getMessageByWaMessageId(row.waMessageId, [])).resolves.toBe(row);
+    });
+
+    it('reports 404 (not 403) when a scoped key reads a message outside its sessions', async () => {
+      findOne.mockResolvedValueOnce(row);
+      // A scoped key for sess-2 only — the row belongs to sess-1. The caller must not learn the row
+      // exists, so this is a NotFoundException rather than a ForbiddenException.
+      await expect(service.getMessageByWaMessageId(row.waMessageId, ['sess-2'])).rejects.toThrow(NotFoundException);
+    });
+  });
+
   // ── getMessages pagination guard ──────────────────────────────────
 
   describe('getMessages pagination guard', () => {

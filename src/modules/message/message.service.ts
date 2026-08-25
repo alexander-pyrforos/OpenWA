@@ -316,6 +316,28 @@ export class MessageService {
   }
 
   /**
+   * Fetch a single message by its WhatsApp message id, with no session required in the request path.
+   *
+   * `waMessageId` is globally unique in practice (it encodes the chat jid + a per-message counter), so
+   * a single `findOne` resolves the row even though the DB only enforces uniqueness within the
+   * composite `(sessionId, waMessageId)`. Session-scope authorization is enforced HERE, not in
+   * {@link ApiKeyGuard}: the lookup route carries no `:sessionId` path param, so the guard cannot
+   * scope by path. A key with a non-empty `allowedSessions` that doesn't cover the row's session is
+   * reported as 404 — not 403 — so a scoped key cannot probe for message ids outside its scope by
+   * distinguishing 403 from 404.
+   */
+  async getMessageByWaMessageId(waMessageId: string, allowedSessions?: string[] | null): Promise<Message> {
+    const row = await this.messageRepository.findOne({ where: { waMessageId } });
+    if (!row) {
+      throw new NotFoundException(`Message ${waMessageId} not found`);
+    }
+    if (allowedSessions && allowedSessions.length > 0 && !allowedSessions.includes(row.sessionId)) {
+      throw new NotFoundException(`Message ${waMessageId} not found`);
+    }
+    return row;
+  }
+
+  /**
    * Expand a JID filter into every stored id that refers to the same chat/person: the literal input (so
    * an exact group/lid filter still matches), the user-part in both user dialects (`@c.us` /
    * `@s.whatsapp.net`), and every lid the resolution table maps to that phone.
