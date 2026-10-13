@@ -46,6 +46,10 @@ export class Message {
   @Column()
   sessionId: string;
 
+  // Session-less lookups by waMessageId alone (GET /api/messages/:waMessageId): the unique
+  // composite below leads with sessionId and cannot serve them. varchar_pattern_ops is added
+  // by migration 1782500000000 for LIKE-prefix support under a non-C collation on PG.
+  @Index('IDX_messages_waMessageId')
   @Column({ nullable: true })
   waMessageId: string;
 
