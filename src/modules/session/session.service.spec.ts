@@ -22,6 +22,7 @@ import { WebhookService } from '../webhook/webhook.service';
 import { HookManager } from '../../core/hooks';
 import { IncomingMessage, EngineEventCallbacks, EngineStatus } from '../../engine/interfaces/whatsapp-engine.interface';
 import { BaileysSessionStore } from '../../engine/adapters/baileys-session-store';
+import { StorageService } from '../../common/storage/storage.service';
 
 function createMockSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -52,6 +53,7 @@ describe('SessionService', () => {
   let hookManager: jest.Mocked<Partial<HookManager>>;
   let configService: jest.Mocked<Partial<ConfigService>>;
   let lidMappingStore: jest.Mocked<Partial<LidMappingStoreService>>;
+  let storageService: { getCurrentStorageType: jest.Mock; refreshS3Availability: jest.Mock; putFile: jest.Mock };
   let mockEngine: Record<string, jest.Mock>;
 
   beforeEach(async () => {
@@ -145,6 +147,14 @@ describe('SessionService', () => {
       lidsForPhone: jest.fn().mockReturnValue([]),
     };
 
+    // StorageService mock for the inbound-media offload (OFFLOAD_MEDIA_TO_STORAGE). Default shape:
+    // an s3 backend that is up and accepts writes; individual tests override per case.
+    storageService = {
+      getCurrentStorageType: jest.fn().mockReturnValue('s3'),
+      refreshS3Availability: jest.fn().mockResolvedValue(true),
+      putFile: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SessionService,
@@ -166,6 +176,7 @@ describe('SessionService', () => {
         { provide: HookManager, useValue: hookManager },
         { provide: ConfigService, useValue: configService },
         { provide: LidMappingStoreService, useValue: lidMappingStore },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -1676,6 +1687,131 @@ describe('SessionService', () => {
 
       expect(messageRepository.insert).not.toHaveBeenCalled();
       expect(dispatchedEvents('message.received')).toHaveLength(0);
+    });
+
+    // ── inbound media offload (OFFLOAD_MEDIA_TO_STORAGE) ───────────────
+    // Contract: the DB row swaps the inline base64 blob for a storage-key reference, the LIVE
+    // webhook/WS payload keeps the inline base64 untouched, and every failure mode falls back to
+    // today's inline persistence (a media message is never lost or blocked by storage).
+    describe('inbound media offload (OFFLOAD_MEDIA_TO_STORAGE)', () => {
+      const b64 = Buffer.from('jpeg-bytes').toString('base64');
+      const mediaMessage = (media: NonNullable<IncomingMessage['media']>): IncomingMessage =>
+        makeMessage({ id: 'wa-off-1', fromMe: false, type: 'image', media });
+      const insertedRow = (): { metadata?: { media?: Record<string, unknown> } } =>
+        (messageRepository.insert as jest.Mock).mock.calls[0][0] as { metadata?: { media?: Record<string, unknown> } };
+
+      it('keeps media inline (no storage write) when the flag is off (default)', async () => {
+        delete process.env.OFFLOAD_MEDIA_TO_STORAGE;
+        echoHook();
+        const callbacks = await startAndCaptureCallbacks();
+
+        callbacks.onMessage!(mediaMessage({ mimetype: 'image/jpeg', filename: 'pic.jpg', data: b64 }));
+        await flush();
+
+        expect(storageService.putFile).not.toHaveBeenCalled();
+        expect(insertedRow().metadata?.media).toMatchObject({ mimetype: 'image/jpeg', data: b64 });
+      });
+
+      it('offloads the blob to storage and keeps only an s3Key reference on the DB row', async () => {
+        process.env.OFFLOAD_MEDIA_TO_STORAGE = 'true';
+        try {
+          echoHook();
+          const callbacks = await startAndCaptureCallbacks();
+
+          callbacks.onMessage!(mediaMessage({ mimetype: 'image/jpeg', filename: 'pic.jpg', data: b64 }));
+          await flush();
+
+          // Key must match MessageService.getMedia's cache probe exactly: `${sessionId}/${waMessageId}.${ext}`.
+          expect(storageService.putFile).toHaveBeenCalledWith('sess-uuid-1/wa-off-1.jpg', Buffer.from(b64, 'base64'));
+          const media = insertedRow().metadata?.media;
+          expect(media).toMatchObject({
+            mimetype: 'image/jpeg',
+            filename: 'pic.jpg',
+            s3Key: 'sess-uuid-1/wa-off-1.jpg',
+            sizeBytes: 10,
+          });
+          expect(media).not.toHaveProperty('data'); // the blob is OUT of the row
+          // The live webhook payload still carries the inline base64 – the n8n/dashboard contract
+          // is untouched; only the persisted row is slimmed.
+          const received = dispatchedEvents('message.received');
+          expect(received).toHaveLength(1);
+          expect((received[0][2] as IncomingMessage).media?.data).toBe(b64);
+        } finally {
+          delete process.env.OFFLOAD_MEDIA_TO_STORAGE;
+        }
+      });
+
+      it('falls back to the local media dir with no S3 availability probe (STORAGE_TYPE=local)', async () => {
+        process.env.OFFLOAD_MEDIA_TO_STORAGE = 'true';
+        try {
+          storageService.getCurrentStorageType.mockReturnValue('local');
+          echoHook();
+          const callbacks = await startAndCaptureCallbacks();
+
+          callbacks.onMessage!(mediaMessage({ mimetype: 'image/png', data: b64 }));
+          await flush();
+
+          expect(storageService.refreshS3Availability).not.toHaveBeenCalled();
+          expect(storageService.putFile).toHaveBeenCalledWith('sess-uuid-1/wa-off-1.png', Buffer.from(b64, 'base64'));
+          expect(insertedRow().metadata?.media).toHaveProperty('s3Key', 'sess-uuid-1/wa-off-1.png');
+        } finally {
+          storageService.getCurrentStorageType.mockReturnValue('s3');
+          delete process.env.OFFLOAD_MEDIA_TO_STORAGE;
+        }
+      });
+
+      it('keeps media inline when the storage write fails (warn, never block or drop the row)', async () => {
+        process.env.OFFLOAD_MEDIA_TO_STORAGE = 'true';
+        try {
+          storageService.putFile.mockRejectedValueOnce(new Error(' NoSuchBucket'));
+          echoHook();
+          const callbacks = await startAndCaptureCallbacks();
+
+          callbacks.onMessage!(mediaMessage({ mimetype: 'image/jpeg', data: b64 }));
+          await flush();
+
+          expect(messageRepository.insert).toHaveBeenCalled();
+          expect(insertedRow().metadata?.media).toMatchObject({ mimetype: 'image/jpeg', data: b64 });
+          expect(dispatchedEvents('message.received')).toHaveLength(1);
+        } finally {
+          storageService.putFile.mockReset();
+          storageService.putFile.mockResolvedValue(undefined);
+          delete process.env.OFFLOAD_MEDIA_TO_STORAGE;
+        }
+      });
+
+      it('keeps media inline when S3 reports unavailable (graceful fallback, no storage write)', async () => {
+        process.env.OFFLOAD_MEDIA_TO_STORAGE = 'true';
+        try {
+          storageService.refreshS3Availability.mockResolvedValueOnce(false);
+          echoHook();
+          const callbacks = await startAndCaptureCallbacks();
+
+          callbacks.onMessage!(mediaMessage({ mimetype: 'image/jpeg', data: b64 }));
+          await flush();
+
+          expect(storageService.putFile).not.toHaveBeenCalled();
+          expect(insertedRow().metadata?.media).toMatchObject({ mimetype: 'image/jpeg', data: b64 });
+        } finally {
+          delete process.env.OFFLOAD_MEDIA_TO_STORAGE;
+        }
+      });
+
+      it('does not touch storage for omitted/oversized media (envelope without a blob)', async () => {
+        process.env.OFFLOAD_MEDIA_TO_STORAGE = 'true';
+        try {
+          echoHook();
+          const callbacks = await startAndCaptureCallbacks();
+
+          callbacks.onMessage!(mediaMessage({ mimetype: 'video/mp4', omitted: true, sizeBytes: 99_000_000 }));
+          await flush();
+
+          expect(storageService.putFile).not.toHaveBeenCalled();
+          expect(insertedRow().metadata?.media).toMatchObject({ mimetype: 'video/mp4', omitted: true });
+        } finally {
+          delete process.env.OFFLOAD_MEDIA_TO_STORAGE;
+        }
+      });
     });
 
     it('does not process an own-send status echo (type=append) — no dispatch, no WS emit, no DB write', async () => {

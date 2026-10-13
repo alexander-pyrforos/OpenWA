@@ -17,6 +17,15 @@ export interface FeatureFlags {
   simulateTyping: boolean;
   /** Upper bound (ms) on the humanising typing pause. Default 5000. */
   simulateTypingMaxMs: number;
+  /**
+   * Offload an inbound media blob from the DB row to the configured storage backend (S3/MinIO or
+   * local) instead of persisting it inline as base64 inside `messages.metadata`. Opt-in – default
+   * OFF, because it changes the persisted row shape (`metadata.media.data` becomes
+   * `metadata.media.s3Key`); consumers that need the bytes must read them via the on-demand
+   * media endpoint (`GET /api/sessions/:id/messages/:waMessageId/media`), which already probes
+   * the same storage key. Opt-in via `OFFLOAD_MEDIA_TO_STORAGE=true`.
+   */
+  offloadMediaToStorage: boolean;
 }
 
 /**
@@ -35,6 +44,7 @@ export function computeFeatureFlags(env: NodeJS.ProcessEnv = process.env): Featu
     resolveLidToPhone: env.RESOLVE_LID_TO_PHONE === 'true',
     simulateTyping: env.SIMULATE_TYPING !== 'false',
     simulateTypingMaxMs: Number(env.SIMULATE_TYPING_MAX_MS) || 5000,
+    offloadMediaToStorage: env.OFFLOAD_MEDIA_TO_STORAGE === 'true',
   };
 }
 

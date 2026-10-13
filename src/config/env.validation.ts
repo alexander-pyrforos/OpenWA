@@ -184,6 +184,7 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'STORE_EPHEMERAL_MESSAGES',
     'RESOLVE_LID_TO_PHONE',
     'SIMULATE_TYPING',
+    'OFFLOAD_MEDIA_TO_STORAGE',
     'SEARCH_ENABLED',
   ]) {
     checkBool(key);

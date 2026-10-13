@@ -37,6 +37,8 @@ import {
   ReactionEvent,
 } from '../../engine/interfaces/whatsapp-engine.interface';
 import { createLogger } from '../../common/services/logger.service';
+import { StorageService } from '../../common/storage/storage.service';
+import { mimetypeExtension } from '../message/mimetype-extension.util';
 import { ShutdownService } from '../../common/services/shutdown.service';
 import { EventsGateway } from '../events/events.gateway';
 import { WebhookService } from '../webhook/webhook.service';
@@ -235,6 +237,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     // service degrades to today's behaviour if it is ever constructed without the (global) LoggerModule.
     @Optional()
     private readonly shutdownService?: ShutdownService,
+    // Media blob offload (OFFLOAD_MEDIA_TO_STORAGE): uploads an inbound media blob to the configured
+    // storage backend so `messages.metadata` keeps only a storage-key reference instead of the full
+    // base64. @Optional so constructions without StorageModule keep today's inline behaviour.
+    @Optional()
+    private readonly storageService?: StorageService,
   ) {}
 
   /**
@@ -771,7 +778,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
 
     const metadata: Record<string, unknown> = {};
     if (incoming.media) {
-      metadata.media = incoming.media;
+      // Shallow copy: the offload below (when enabled) replaces `data` with a storage-key reference on
+      // the DB row's copy only – the live `incoming`/webhook payload keeps the inline base64, so the
+      // n8n/dashboard webhook contract is untouched by the persistence-layer optimisation.
+      metadata.media = { ...incoming.media };
+      await this.offloadMediaBlob(id, incoming.id, metadata);
     }
     if (incoming.quotedMessage) {
       metadata.quotedMessage = incoming.quotedMessage;
@@ -857,6 +868,82 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       this.eventsGateway.emitMessage(id, event as unknown as Record<string, unknown>);
     }
     return { persisted: true, failure: 'none', dbMessage };
+  }
+
+  /**
+   * Best-effort offload of an inbound media blob from the DB row to the configured storage backend
+   * (S3/MinIO via STORAGE_TYPE=s3, or the local media dir). When the offload succeeds, the row's
+   * `metadata.media` keeps a `{ mimetype, filename?, s3Key, sizeBytes }` reference instead of the full
+   * base64 `data` – the single biggest lever against `messages.metadata` bloat (on prod ~94% of the
+   * 102 GB table was inline base64 while the S3 bucket sat empty: the inbound pipeline never wrote to
+   * storage at all, whatever STORAGE_TYPE said).
+   *
+   * The storage key is EXACTLY the key `MessageService.getMedia` already probes for its on-demand
+   * cache (`${sessionId}/${waMessageId}.${ext}`, ext derived from the same mimetype helper), so the
+   * existing read path streams the offloaded bytes back with NO further change: the inline fast path
+   * misses (no `data`), the S3/local probe hits. The `s3Key` field name is kept for BOTH backends so
+   * consumers don't branch on the storage type.
+   *
+   * Fail-safe in every direction – a media message must never be lost or blocked by storage:
+   *   - flag off (default) / no StorageService / no `data` -> untouched inline row (today's behavior)
+   *   - S3 down (availability probe fails) or putFile throws -> WARN + keep the inline base64
+   * Omitted/oversized media (`omitted: true`, no `data`) and outbound sends are untouched by this
+   * method; outbound media offload is a separate follow-up (its `data` may be a URL, not base64).
+   */
+  private async offloadMediaBlob(
+    sessionId: string,
+    waMessageId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const media = metadata.media as {
+      data?: string;
+      mimetype?: string;
+      filename?: string;
+      omitted?: boolean;
+      sizeBytes?: number;
+    };
+    if (typeof media?.data !== 'string' || media.data.length === 0) return; // nothing to offload
+    if (!resolveFeatureFlags(this.configService).offloadMediaToStorage) return; // opt-in flag
+    if (!this.storageService) return; // constructed without StorageModule -> inline, as before
+    if (this.storageService.getCurrentStorageType() === 's3') {
+      // Throttled re-probe (10s): a bundled MinIO that raced app boot latches false at init, and a
+      // later poll must be able to recover it. Unavailable -> keep the row inline (never drop media).
+      const available = await this.storageService.refreshS3Availability();
+      if (!available) {
+        this.logger.warn('Media offload skipped: S3 storage unavailable, keeping media inline', {
+          sessionId,
+          waMessageId,
+        });
+        return;
+      }
+    }
+
+    // Must match MessageService.getMedia's cache-key derivation exactly (same mimetype hint, same
+    // extension helper) or the read-path probe would miss and fall through to a WhatsApp re-download.
+    const mimetypeHint = media.mimetype ?? 'application/octet-stream';
+    const ext = mimetypeExtension(mimetypeHint);
+    const key = `${sessionId}/${waMessageId}.${ext}`;
+    const buffer = Buffer.from(media.data, 'base64');
+
+    try {
+      await this.storageService.putFile(key, buffer);
+    } catch (err) {
+      this.logger.warn('Media offload failed, keeping media inline', {
+        sessionId,
+        waMessageId,
+        key,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    metadata.media = {
+      mimetype: media.mimetype,
+      ...(media.filename !== undefined ? { filename: media.filename } : {}),
+      ...(media.omitted !== undefined ? { omitted: media.omitted, sizeBytes: media.sizeBytes } : {}),
+      s3Key: key,
+      sizeBytes: buffer.length,
+    };
   }
 
   /**
