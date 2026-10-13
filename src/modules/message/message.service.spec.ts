@@ -509,12 +509,14 @@ describe('MessageService', () => {
       type: 'text',
     } as Message;
 
-    // A query-builder fake for the truncated-id prefix fallback. Only the chain the service uses
-    // (where → andWhere? → getMany) is mocked; getMany returns the supplied rows.
-    const makePrefixQb = (rows: Message[]) => {
+    // A query-builder fake for the truncated-id prefix fallback. The probe is id-only and bounded
+    // (select → where → andWhere? → take → getMany); getMany returns the supplied rows.
+    const makePrefixQb = (rows: Partial<Message>[]) => {
       const qb = {
+        select: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
         getMany: jest.fn().mockResolvedValue(rows),
       };
       return qb;
@@ -529,7 +531,7 @@ describe('MessageService', () => {
     it('throws NotFound when no row matches and there is no prefix match either', async () => {
       findOne.mockResolvedValueOnce(null);
       (repository.createQueryBuilder as jest.Mock).mockReturnValue(makePrefixQb([]));
-      await expect(service.getMessageByWaMessageId('NOPE')).rejects.toThrow(NotFoundException);
+      await expect(service.getMessageByWaMessageId('false_MISSING@g.us_X_Y')).rejects.toThrow(NotFoundException);
     });
 
     it('returns the row when the key allowlist covers the row session (scope applied in the query)', async () => {
@@ -560,23 +562,30 @@ describe('MessageService', () => {
 
     it('resolves a truncated id via a unique prefix match when the exact match misses', async () => {
       // The caller stored a VARCHAR(64)-clipped id; the DB now holds the longer full id. Exact match
-      // misses, the prefix LIKE finds exactly one row, and that row is returned.
-      const qb = makePrefixQb([row]);
-      findOne.mockResolvedValueOnce(null);
+      // misses, the prefix LIKE finds exactly one candidate id, and the full row is loaded by PK.
+      const qb = makePrefixQb([{ id: 'msg-uuid-1' }]);
+      findOne.mockResolvedValueOnce(null).mockResolvedValueOnce(row);
       (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
       await expect(service.getMessageByWaMessageId(truncatedId)).resolves.toBe(row);
       // LIKE pattern is the LIKE-escaped id followed by a single trailing % wildcard, ESCAPE '\'.
       expect(qb.where).toHaveBeenCalledWith(`m.waMessageId LIKE :pattern ESCAPE '\\'`, {
         pattern: 'false\\_120363029044634721@g.us\\_3A3077A960963FD1938C\\_2476007374644%',
       });
+      // The prefix probe must stay bounded and id-only: no base64 payloads hydrated, max 2 rows.
+      expect(qb.select).toHaveBeenCalledWith('m.id');
+      expect(qb.take).toHaveBeenCalledWith(2);
+      // The winner is hydrated by primary key, so the heavy metadata is fetched for one row only.
+      expect(findOne).toHaveBeenLastCalledWith({ where: { id: 'msg-uuid-1' } });
     });
 
     it('rejects an ambiguous prefix (multiple stored ids share it) with 409 Conflict', async () => {
       const other = { ...row, id: 'msg-uuid-2', waMessageId: fullId + '9@lid' };
-      const qb = makePrefixQb([row, other]);
+      const qb = makePrefixQb([{ id: 'msg-uuid-1' }, other]);
       findOne.mockResolvedValueOnce(null);
       (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
       await expect(service.getMessageByWaMessageId(truncatedId)).rejects.toThrow(ConflictException);
+      // Ambiguity is decided from the 2-id probe alone: no winning row is ever hydrated.
+      expect(findOne).toHaveBeenCalledTimes(1);
     });
 
     it('does not treat `_` in the id as a LIKE wildcard on the prefix path', async () => {
@@ -588,6 +597,26 @@ describe('MessageService', () => {
       expect(qb.where).toHaveBeenCalledWith(`m.waMessageId LIKE :pattern ESCAPE '\\'`, {
         pattern: 'false\\_NOPE@g.us\\_X\\_Y%',
       });
+    });
+
+    it('rejects a too-short id with 400 on the prefix path, without running the LIKE probe', async () => {
+      // Every wwebjs-era id starts with `false_`, so a broad prefix like `f` would otherwise fan the
+      // probe across the whole table. The guard fires only after the exact match misses, and no
+      // query builder is ever constructed.
+      const qb = makePrefixQb([]);
+      findOne.mockResolvedValueOnce(null);
+      (repository.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+      await expect(service.getMessageByWaMessageId('false')).rejects.toThrow(BadRequestException);
+      expect(repository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(qb.getMany).not.toHaveBeenCalled();
+    });
+
+    it('still returns a short id that matches exactly (the length guard applies only to the fallback)', async () => {
+      // Baileys-era ids are short; a caller holding one must keep resolving it on the exact path.
+      findOne.mockResolvedValueOnce(row);
+      await expect(service.getMessageByWaMessageId('3EB0ABCDEF')).resolves.toBe(row);
+      expect(findOne).toHaveBeenCalledWith({ where: { waMessageId: '3EB0ABCDEF' } });
+      expect(repository.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 

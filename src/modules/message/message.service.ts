@@ -30,6 +30,14 @@ export interface GetMessagesOptions {
 }
 
 /**
+ * Shortest id we will prefix-match in the truncated-id fallback of
+ * {@link MessageService.getMessageByWaMessageId}. Every wwebjs-era id starts with `false_`, so a
+ * shorter input would fan the LIKE out across a huge slice of the messages table; real callers
+ * (the ERP's VARCHAR(64)-clipped ids) are never anywhere near this short.
+ */
+const MIN_PREFIX_LOOKUP_LENGTH = 8;
+
+/**
  * Outbound sends are executed directly against the WhatsApp engine, not via a BullMQ queue.
  *
  * The engine is single-threaded per session (a Puppeteer page for the whatsapp-web.js adapter, a
@@ -323,16 +331,20 @@ export class MessageService {
    * composite `(sessionId, waMessageId)`. Session-scope authorization is enforced HERE, not in
    * {@link ApiKeyGuard}: the lookup route carries no `:sessionId` path param, so the guard cannot
    * scope by path. A key with a non-empty `allowedSessions` that doesn't cover the row's session is
-   * reported as 404 — not 403 — so a scoped key cannot probe for message ids outside its scope by
+   * reported as 404 – not 403 – so a scoped key cannot probe for message ids outside its scope by
    * distinguishing 403 from 404.
    *
    * Truncated-id fallback: downstream systems (the ERP extractor among them) have historically stored
    * `waMessageId` in a `VARCHAR(64)` column, which clips the full id. The current wwebjs-era id is
-   * longer than 64 chars — it appends a longer per-message counter and an `@lid` suffix — so the
+   * longer than 64 chars – it appends a longer per-message counter and an `@lid` suffix – so the
    * caller's stored id is a strict prefix of what this DB now holds. An exact match misses; we then
-   * resolve by prefix match and require a unique hit. A non-unique prefix (a short counter prefix can
-   * collide across messages from the same sender in the same chat) is rejected as 409 rather than
-   * risking the wrong message. Full, untruncated ids still resolve on the exact-match fast path.
+   * resolve by prefix match and require a unique hit. The prefix probe is deliberately bounded: it
+   * selects only the primary key with take(2), so a broad prefix (everything starts with `false_`)
+   * costs a cheap id-only scan instead of hydrating hundreds of thousands of rows together with
+   * their base64 media payloads. A non-unique prefix (a short counter prefix can collide across
+   * messages from the same sender in the same chat) is rejected as 409 rather than risking the
+   * wrong message; an id too short to be a meaningful prefix is rejected as 400 without touching
+   * the table. Full, untruncated ids still resolve on the exact-match fast path.
    */
   async getMessageByWaMessageId(waMessageId: string, allowedSessions?: string[] | null): Promise<Message> {
     const scoped = allowedSessions && allowedSessions.length > 0 ? allowedSessions : null;
@@ -344,21 +356,38 @@ export class MessageService {
       return exact;
     }
 
+    if (waMessageId.length < MIN_PREFIX_LOOKUP_LENGTH) {
+      throw new BadRequestException(
+        `waMessageId "${waMessageId}" is too short for a prefix lookup ` +
+          `(minimum ${MIN_PREFIX_LOOKUP_LENGTH} characters); provide the full id`,
+      );
+    }
+
     // Escape LIKE metacharacters (`\`, `%`, `_`) so the caller's id is matched literally as a prefix.
     const escaped = waMessageId.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
     const qb = this.messageRepository
       .createQueryBuilder('m')
+      .select('m.id')
       .where(`m.waMessageId LIKE :pattern ESCAPE '\\'`, { pattern: `${escaped}%` });
     if (scoped) {
       qb.andWhere('m.sessionId IN (:...scoped)', { scoped });
     }
-    const prefixRows = await qb.getMany();
-    if (prefixRows.length === 1) {
-      return prefixRows[0];
+    // Two candidate ids are all we can learn from: zero, one, or ambiguous. Loading more would
+    // re-create the unbounded hydration this probe exists to prevent.
+    qb.take(2);
+    const prefixIds = await qb.getMany();
+    if (prefixIds.length === 1) {
+      const winner = await this.messageRepository.findOne({ where: { id: prefixIds[0].id } });
+      if (winner) {
+        return winner;
+      }
+      // Fell out from under us between the probe and the hydration (concurrent delete): report
+      // not found rather than crash on a null the caller cannot interpret.
+      throw new NotFoundException(`Message ${waMessageId} not found`);
     }
-    if (prefixRows.length > 1) {
+    if (prefixIds.length > 1) {
       throw new ConflictException(
-        `waMessageId "${waMessageId}" matches ${prefixRows.length} stored messages; provide the full id to disambiguate`,
+        `waMessageId "${waMessageId}" matches more than one stored message; provide the full id to disambiguate`,
       );
     }
     throw new NotFoundException(`Message ${waMessageId} not found`);

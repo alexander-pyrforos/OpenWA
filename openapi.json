@@ -2285,6 +2285,9 @@
               }
             }
           },
+          "400": {
+            "description": "The id missed the exact match and is too short (< 8 chars) for a safe prefix lookup; provide the full id."
+          },
           "404": {
             "description": "Message not found"
           },

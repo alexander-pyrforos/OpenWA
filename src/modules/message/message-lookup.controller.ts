@@ -32,6 +32,11 @@ export class MessageLookupController {
     description:
       'The id is a prefix of more than one stored message (ambiguous). Provide the full waMessageId to disambiguate.',
   })
+  @ApiResponse({
+    status: 400,
+    description:
+      'The id missed the exact match and is too short (< 8 chars) for a safe prefix lookup; provide the full id.',
+  })
   @ApiResponse({ status: 404, description: 'Message not found' })
   async getMessage(@Param('waMessageId') waMessageId: string, @CurrentApiKey() apiKey?: ApiKey): Promise<Message> {
     return this.messageService.getMessageByWaMessageId(waMessageId, apiKey?.allowedSessions ?? undefined);
