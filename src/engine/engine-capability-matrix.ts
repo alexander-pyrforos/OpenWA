@@ -64,6 +64,12 @@ export const ENGINE_CAPABILITY_MATRIX: Record<string, MethodCapability> = {
   demoteParticipants: { wwjs: { status: 'supported' }, baileys: { status: 'supported' } },
   destroy: { wwjs: { status: 'supported' }, baileys: { status: 'supported' } },
   disconnect: { wwjs: { status: 'supported' }, baileys: { status: 'supported' } },
+  downloadMediaByWaMessageId: {
+    wwjs: { status: 'not-available', rootCause: 'adapter-gap' },
+    baileys: { status: 'supported' },
+    evidence:
+      'wwjs Message.downloadMedia exists but the adapter keeps no by-id message store to resolve a bare waMessageId (throws @whatsapp-web-js.adapter.ts:1899); baileys downloads from the persisted descriptor/message stores (baileys.adapter.ts:1682)',
+  },
   forceDestroy: { wwjs: { status: 'supported' }, baileys: { status: 'supported' } },
   forwardMessage: { wwjs: { status: 'supported' }, baileys: { status: 'supported' } },
   getCatalog: {
