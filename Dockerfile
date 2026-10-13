@@ -88,14 +88,18 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Backport whatsapp-web.js#201832 (WA Web 2026-07 `_serialized`→`$1` id rename) into the installed
-# package. Copied before `npm ci` so the postinstall hook can apply it too; the explicit strict run
-# below is authoritative and self-disables once wwebjs ships the fix upstream. See
-# scripts/patch-wwebjs-201832.js — without this, getChats/getChatHistory throw `r: r`.
-COPY scripts/patch-wwebjs-201832.js scripts/wwebjs-201832.patch ./scripts/
+# Backport whatsapp-web.js fixes into the installed package; upstream has no release after
+# 1.34.7. Each script is copied before `npm ci` so the postinstall hook can apply it too
+# (best-effort); the explicit strict runs below are authoritative and each self-disables once
+# wwebjs ships the fix upstream. Without these, on current WA Web builds:
+# - patch-wwebjs-201832.js: getChats/getChatHistory throw `r: r` (2026-07 `_serialized`→`$1` id rename)
+# - patch-wwebjs-download-mimetype.js: every inbound media download the page has not already
+#   decrypted fails `InvalidMediaFileType`, logged as `Error downloading media / t: t`
+#   (WA Web ~2026-09-26 added a mimetype check to downloadAndMaybeDecrypt; upstream PR #1750)
+COPY scripts/patch-wwebjs-201832.js scripts/wwebjs-201832.patch scripts/patch-wwebjs-download-mimetype.js ./scripts/
 
-# Install production dependencies only, then apply the wwebjs backport patcher (needs `patch`).
-RUN npm ci --omit=dev && node scripts/patch-wwebjs-201832.js && npm cache clean --force
+# Install production dependencies only, then apply the wwebjs backport patchers (201832 needs `patch`).
+RUN npm ci --omit=dev && node scripts/patch-wwebjs-201832.js && node scripts/patch-wwebjs-download-mimetype.js && npm cache clean --force
 
 # amd64: download Chrome for Testing via Puppeteer and symlink it.
 # arm64: use Debian's chromium installed above (CfT has no linux-arm64 build).
