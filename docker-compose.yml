@@ -149,6 +149,10 @@ services:
       - S3_SECRET_KEY=${S3_SECRET_KEY:-}
       - S3_REGION=${S3_REGION:-}
       - S3_BUCKET=${S3_BUCKET:-}
+      # H4: offload inbound media blobs to storage; the row keeps only {mimetype, filename?, s3Key,
+      # sizeBytes}. Opt-in - unset/blank keeps the legacy inline-base64 rows. (Without this line the
+      # var in .env never reaches the container.)
+      - OFFLOAD_MEDIA_TO_STORAGE=${OFFLOAD_MEDIA_TO_STORAGE:-}
       # Redis. Blank-forwarded (see Database note) so a dashboard enable/disable applies; a real host
       # value pins.
       - REDIS_ENABLED=${REDIS_ENABLED:-}
