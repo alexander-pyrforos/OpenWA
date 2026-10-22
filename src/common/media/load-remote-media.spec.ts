@@ -54,4 +54,25 @@ describe('loadRemoteMediaBuffer', () => {
     (undiciFetch as jest.Mock).mockResolvedValue(fakeResponse([1, 2, 3], { 'content-type': 'image/png' }));
     await expect(loadRemoteMediaBuffer('http://8.8.8.8/x.png')).rejects.toThrow(/exceeds/i);
   });
+
+  it('lets the caller override the byte cap without env vars', async () => {
+    (undiciFetch as jest.Mock).mockResolvedValue(fakeResponse([1, 2, 3], { 'content-type': 'image/png' }));
+    await expect(loadRemoteMediaBuffer('http://8.8.8.8/x.png', { maxBytes: 2 })).rejects.toThrow(/exceeds/i);
+    await expect(loadRemoteMediaBuffer('http://8.8.8.8/x.png', { maxBytes: 3 })).resolves.toMatchObject({
+      mimetype: 'image/png',
+    });
+  });
+
+  it('aborts a hanging fetch after the caller-supplied timeout (not the 30s default)', async () => {
+    const fetchMock = undiciFetch as jest.Mock;
+    // A fetch that never resolves on its own; only an abort can settle it (rejects like undici does).
+    fetchMock.mockImplementation(
+      (_url: string, init: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+        }),
+    );
+    await expect(loadRemoteMediaBuffer('http://8.8.8.8/x.png', { timeoutMs: 50 })).rejects.toThrow(/aborted/i);
+    expect(fetchMock).toHaveBeenCalled();
+  });
 });

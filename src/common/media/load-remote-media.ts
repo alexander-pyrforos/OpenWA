@@ -19,10 +19,15 @@ function positiveIntFromEnv(name: string, fallback: number): number {
  * or wrong) to bound memory use.
  *
  * Engine-neutral: returns raw bytes + the response content-type, so any engine adapter can use it.
+ * `opts` overrides the env-derived cap/timeout per call (e.g. a small avatar fetch shouldn't hold
+ * the caller for the full 30s media-download window).
  */
-export async function loadRemoteMediaBuffer(url: string): Promise<{ data: Buffer; mimetype: string }> {
-  const maxBytes = positiveIntFromEnv('MEDIA_DOWNLOAD_MAX_BYTES', DEFAULT_MEDIA_MAX_BYTES);
-  const timeoutMs = positiveIntFromEnv('MEDIA_DOWNLOAD_TIMEOUT_MS', DEFAULT_MEDIA_TIMEOUT_MS);
+export async function loadRemoteMediaBuffer(
+  url: string,
+  opts: { maxBytes?: number; timeoutMs?: number } = {},
+): Promise<{ data: Buffer; mimetype: string }> {
+  const maxBytes = opts.maxBytes ?? positiveIntFromEnv('MEDIA_DOWNLOAD_MAX_BYTES', DEFAULT_MEDIA_MAX_BYTES);
+  const timeoutMs = opts.timeoutMs ?? positiveIntFromEnv('MEDIA_DOWNLOAD_TIMEOUT_MS', DEFAULT_MEDIA_TIMEOUT_MS);
 
   // Always guarded (media SSRF is independent of the webhook opt-out); withSafeFetch validates the
   // host, pins the connection to the vetted IP, and refuses redirects. The streaming cap runs inside

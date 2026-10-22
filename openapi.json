@@ -3071,6 +3071,37 @@
         ]
       }
     },
+    "/api/profile/{phone}": {
+      "get": {
+        "operationId": "ProfileController_getProfile",
+        "parameters": [
+          {
+            "name": "phone",
+            "required": true,
+            "in": "path",
+            "description": "International number digits only — no \"+\" and no \"@c.us\" (e.g. 380671234567)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lookup verdict. `exists:false` means the number is not registered on WhatsApp (a normal result, NOT an error); `name`/`profilePic` are null when absent or unfetchable."
+          },
+          "400": {
+            "description": "Invalid phone (not digits, empty, or outside 8–15 digits); body carries `error: \"invalid phone\"`."
+          },
+          "503": {
+            "description": "No READY WhatsApp session (or the lookup hung past its bound); body carries `error: \"session not ready\"`."
+          }
+        },
+        "summary": "Check a phone number on WhatsApp and fetch its display name + avatar as a data URL (no session required)",
+        "tags": [
+          "profile"
+        ]
+      }
+    },
     "/api/sessions/{sessionId}/groups/{groupId}": {
       "get": {
         "operationId": "GroupController_findOne",
