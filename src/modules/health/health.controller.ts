@@ -26,7 +26,11 @@ const { version: APP_VERSION } = require('../../../package.json') as { version: 
 @ApiTags('health')
 @Controller('health')
 @Public()
-@SkipThrottle()
+// Skip the PRODUCTION NAMED throttlers explicitly: bare `@SkipThrottle()` only sets
+// skip metadata for a throttler named "default" (@nestjs/throttler v6 default arg),
+// while ThrottlerGuard checks skip per configured throttler name (short/medium/long)
+// — so the bare form was a no-op and /api/health got rate-limited (permanent 429s).
+@SkipThrottle({ short: true, medium: true, long: true })
 export class HealthController {
   constructor(
     @InjectDataSource('main') private readonly mainDataSource: DataSource,

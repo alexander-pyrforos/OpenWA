@@ -36,11 +36,16 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     const redisKey = `openwa:throttle:${throttlerName}:${key}`;
     try {
       const hits = await this.redis.incr(redisKey);
-      if (hits === 1) {
-        // First hit in the window sets the TTL; subsequent hits inherit it (fixed window from first hit).
+      let ttlMs = await this.redis.pttl(redisKey);
+      if (ttlMs < 0) {
+        // Self-heal a TTL lost to a Redis connection drop/restart between incr and
+        // pexpire: the incr-created key would otherwise never expire, so every hit
+        // counts forever and, past the limit, the route is permanently 429 (prod
+        // outage 2026-10-27: /api/health stuck at 16k+ hits, PTTL -1). Old code set
+        // the TTL only on the first hit, which never comes again for such a key.
         await this.redis.pexpire(redisKey, ttl);
+        ttlMs = await this.redis.pttl(redisKey);
       }
-      const ttlMs = await this.redis.pttl(redisKey);
       const isBlocked = hits > limit;
       return {
         totalHits: hits,

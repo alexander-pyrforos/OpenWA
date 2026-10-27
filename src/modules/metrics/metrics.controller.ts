@@ -6,13 +6,16 @@ import { MetricsService } from './metrics.service';
 
 /**
  * Prometheus scrape endpoint. `@Public()` bypasses the API-key guard and
- * `@SkipThrottle()` keeps a scrape interval from eating the rate-limit budget; access is
+ * `@SkipThrottle(...)` keeps a scrape interval from eating the rate-limit budget; access is
  * instead gated by METRICS_TOKEN inside the service (disabled-by-default).
  */
 @ApiTags('metrics')
 @Controller('metrics')
 @Public()
-@SkipThrottle()
+// Skip the PRODUCTION NAMED throttlers explicitly: bare `@SkipThrottle()` only sets skip
+// metadata for a throttler named "default" (@nestjs/throttler v6 default arg), while
+// ThrottlerGuard checks skip per configured throttler name (short/medium/long).
+@SkipThrottle({ short: true, medium: true, long: true })
 export class MetricsController {
   constructor(private readonly metricsService: MetricsService) {}
 

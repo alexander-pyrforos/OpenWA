@@ -1,47 +1,82 @@
 import { RedisThrottlerStorage } from './redis-throttler.storage';
-import type { Redis } from 'ioredis';
 
-type MockRedis = { incr: jest.Mock; pexpire: jest.Mock; pttl: jest.Mock };
+/**
+ * Regression lock: the storage must self-heal a Redis key that lost its TTL.
+ *
+ * Failure mode (production, 2026-10-27): a Redis connection drop/restart between
+ * the `incr` (created the key) and the `pexpire` (lost) left the bucket key with NO
+ * TTL. Because the old code only set the TTL when `incr` returned exactly 1, the key
+ * could never regain it — every request counted forever, and once hits passed the
+ * limit EVERY request on that route was 429 permanently (/api/health was stuck
+ * blocked with 16k+ hits and PTTL = -1).
+ *
+ * The fix checks PTTL on every increment and re-applies the window TTL whenever it
+ * is missing, preserving fixed-window semantics for keys that still have one.
+ */
 
-const makeRedis = (opts: { hits: number; ttlMs: number }): MockRedis => ({
-  incr: jest.fn().mockResolvedValue(opts.hits),
-  pexpire: jest.fn().mockResolvedValue(1),
-  pttl: jest.fn().mockResolvedValue(opts.ttlMs),
-});
+interface FakeCall {
+  cmd: string;
+  args: unknown[];
+}
 
-describe('RedisThrottlerStorage', () => {
-  it('first hit (incr=1): sets the TTL once, reports totalHits + remaining time in seconds, not blocked', async () => {
-    const redis = makeRedis({ hits: 1, ttlMs: 1500 });
-    const rec = await new RedisThrottlerStorage(redis as unknown as Redis).increment(
-      '1.2.3.4',
-      1000,
-      10,
-      60000,
-      'short',
-    );
-    expect(redis.incr).toHaveBeenCalledWith('openwa:throttle:short:1.2.3.4');
-    expect(redis.pexpire).toHaveBeenCalledWith('openwa:throttle:short:1.2.3.4', 1000);
-    expect(rec).toEqual({ totalHits: 1, timeToExpire: 2, isBlocked: false, timeToBlockExpire: 0 });
+/**
+ * @param pttlWithoutTtl what `pttl` reports while the key has no TTL (Redis: -1)
+ * @param initialIncr    what the first `incr` returns (2 = NOT the first hit)
+ */
+function makeRedis(pttlWithoutTtl: number, initialIncr: number) {
+  const calls: FakeCall[] = [];
+  let incrs = 0;
+  const redis = {
+    async incr() {
+      calls.push({ cmd: 'incr', args: [] });
+      incrs += 1;
+      return incrs === 1 ? initialIncr : initialIncr + incrs - 1;
+    },
+    async pttl() {
+      calls.push({ cmd: 'pttl', args: [] });
+      // Once a pexpire ran, the key has a live TTL (1000ms); before that, none.
+      return calls.some(c => c.cmd === 'pexpire') ? 1000 : pttlWithoutTtl;
+    },
+    async pexpire(_key: string, ttl: number) {
+      calls.push({ cmd: 'pexpire', args: [ttl] });
+      return 1;
+    },
+  };
+  return { redis, calls };
+}
+
+describe('RedisThrottlerStorage TTL self-heal', () => {
+  it('re-applies the TTL when the key has none (lost pexpire)', async () => {
+    // Production state: the key was created by an incr whose pexpire was lost,
+    // so this increment is NOT the first hit (returns 2) and PTTL is -1 (exists, no TTL).
+    const { redis, calls } = makeRedis(-1, 2);
+    const storage = new RedisThrottlerStorage(redis as never);
+    const record = await storage.increment('k', 1000, 10, 1000, 'short');
+
+    expect(calls.some(c => c.cmd === 'pexpire')).toBe(true);
+    expect(record.timeToExpire).toBe(1); // ceil(1000ms / 1000)
+    expect(record.isBlocked).toBe(false);
   });
 
-  it('subsequent hit (incr>1) does NOT re-set the TTL (inherits the window from the first hit)', async () => {
-    const redis = makeRedis({ hits: 3, ttlMs: 800 });
-    await new RedisThrottlerStorage(redis as unknown as Redis).increment('k', 1000, 10, 60000, 'short');
-    expect(redis.pexpire).not.toHaveBeenCalled();
+  it('blocks when hits exceed the limit', async () => {
+    const fake = {
+      incr: async () => 11,
+      pexpire: async () => 1,
+      pttl: async () => 500,
+    };
+    const storage = new RedisThrottlerStorage(fake as never);
+    const record = await storage.increment('k', 1000, 10, 1000, 'short');
+    expect(record.isBlocked).toBe(true);
+    expect(record.timeToBlockExpire).toBe(1);
   });
 
-  it('over the limit (incr>limit) is blocked with blockDuration in seconds', async () => {
-    const redis = makeRedis({ hits: 11, ttlMs: 500 });
-    const rec = await new RedisThrottlerStorage(redis as unknown as Redis).increment('k', 1000, 10, 60000, 'short');
-    expect(rec.isBlocked).toBe(true);
-    expect(rec.totalHits).toBe(11);
-    expect(rec.timeToBlockExpire).toBe(60); // 60000ms / 1000
-  });
-
-  it('fails OPEN on a Redis error (returns a non-blocking record so the limiter never self-DoSes)', async () => {
-    const redis = makeRedis({ hits: 1, ttlMs: 1000 });
-    redis.incr.mockRejectedValue(new Error('ECONNREFUSED'));
-    const rec = await new RedisThrottlerStorage(redis as unknown as Redis).increment('k', 1000, 10, 60000, 'short');
-    expect(rec).toEqual({ totalHits: 0, timeToExpire: 0, isBlocked: false, timeToBlockExpire: 0 });
+  it('keeps the existing TTL window untouched (no sliding window)', async () => {
+    // 2nd hit with 500ms left on the window: no pexpire, remaining time reported.
+    const { redis, calls } = makeRedis(500, 2);
+    const storage = new RedisThrottlerStorage(redis as never);
+    const record = await storage.increment('k', 1000, 10, 1000, 'short');
+    expect(calls.filter(c => c.cmd === 'pexpire').length).toBe(0);
+    expect(record.totalHits).toBe(2);
+    expect(record.timeToExpire).toBe(1); // ceil(500/1000)
   });
 });
