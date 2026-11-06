@@ -3087,7 +3087,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Lookup verdict. `exists:false` means the number is not registered on WhatsApp (a normal result, NOT an error); `name`/`profilePic` are null when absent or unfetchable."
+            "description": "Lookup verdict. `exists:false` means the number is not registered on WhatsApp (a normal result, NOT an error); `name` (phonebook), `pushname` (the contact's own WhatsApp profile name) and `profilePic` are null when absent or unfetchable."
           },
           "400": {
             "description": "Invalid phone (not digits, empty, or outside 8–15 digits); body carries `error: \"invalid phone\"`."
@@ -3096,7 +3096,7 @@
             "description": "No READY WhatsApp session (or the lookup hung past its bound); body carries `error: \"session not ready\"`."
           }
         },
-        "summary": "Check a phone number on WhatsApp and fetch its display name + avatar as a data URL (no session required)",
+        "summary": "Check a phone number on WhatsApp and fetch its phonebook name, pushname + avatar as a data URL (no session required)",
         "tags": [
           "profile"
         ]

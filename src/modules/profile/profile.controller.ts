@@ -20,7 +20,8 @@ export class ProfileController {
 
   @Get(':phone')
   @ApiOperation({
-    summary: 'Check a phone number on WhatsApp and fetch its display name + avatar as a data URL (no session required)',
+    summary:
+      'Check a phone number on WhatsApp and fetch its phonebook name, pushname + avatar as a data URL (no session required)',
   })
   @ApiParam({
     name: 'phone',
@@ -29,7 +30,7 @@ export class ProfileController {
   @ApiResponse({
     status: 200,
     description:
-      'Lookup verdict. `exists:false` means the number is not registered on WhatsApp (a normal result, NOT an error); `name`/`profilePic` are null when absent or unfetchable.',
+      "Lookup verdict. `exists:false` means the number is not registered on WhatsApp (a normal result, NOT an error); `name` (phonebook), `pushname` (the contact's own WhatsApp profile name) and `profilePic` are null when absent or unfetchable.",
   })
   @ApiResponse({
     status: 400,

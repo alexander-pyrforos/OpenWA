@@ -58,6 +58,7 @@ describe('ProfileService', () => {
         chatId: null,
         exists: null,
         name: null,
+        pushname: null,
         profilePic: null,
         error: 'invalid phone',
       });
@@ -123,6 +124,7 @@ describe('ProfileService', () => {
       chatId: '380671234567@c.us',
       exists: false,
       name: null,
+      pushname: null,
       profilePic: null,
     });
     expect(engine.getContactById).not.toHaveBeenCalled();
@@ -132,18 +134,37 @@ describe('ProfileService', () => {
 
   // ---------- number on WhatsApp (200 exists:true) ----------
 
-  it('returns pushName and the avatar as a data URL', async () => {
+  it('returns the phonebook name, the pushname and the avatar as a data URL', async () => {
     const { service } = makeService([READY_SESSION], { s1: readyEngine() });
     const result = await service.lookupByPhone('380671234567');
     expect(result).toEqual({
       chatId: '380671234567@c.us',
       exists: true,
-      name: 'Sasha Watch',
+      name: null,
+      pushname: 'Sasha Watch',
       profilePic: 'data:image/jpeg;base64,aW1n',
     });
   });
 
-  it('falls back to the contact name when pushName is absent', async () => {
+  it('returns name and pushname independently when both are present', async () => {
+    const engine = readyEngine({
+      getContactById: jest.fn().mockResolvedValue({
+        id: '380671234567@c.us',
+        name: 'Sasha (phonebook)',
+        pushName: 'Sasha Watch',
+        number: '380671234567',
+        isMyContact: false,
+        isBlocked: false,
+      }),
+    });
+    const { service } = makeService([READY_SESSION], { s1: engine });
+    await expect(service.lookupByPhone('380671234567')).resolves.toMatchObject({
+      name: 'Sasha (phonebook)',
+      pushname: 'Sasha Watch',
+    });
+  });
+
+  it('keeps pushname:null when the contact has only a phonebook name', async () => {
     const engine = readyEngine({
       getContactById: jest.fn().mockResolvedValue({
         id: '380671234567@c.us',
@@ -154,13 +175,20 @@ describe('ProfileService', () => {
       }),
     });
     const { service } = makeService([READY_SESSION], { s1: engine });
-    await expect(service.lookupByPhone('380671234567')).resolves.toMatchObject({ name: 'Sasha (phonebook)' });
+    await expect(service.lookupByPhone('380671234567')).resolves.toMatchObject({
+      name: 'Sasha (phonebook)',
+      pushname: null,
+    });
   });
 
-  it('returns name:null when the engine cannot resolve a contact', async () => {
+  it('returns name:null and pushname:null when the engine cannot resolve a contact', async () => {
     const engine = readyEngine({ getContactById: jest.fn().mockRejectedValue(new Error('unknown id')) });
     const { service } = makeService([READY_SESSION], { s1: engine });
-    await expect(service.lookupByPhone('380671234567')).resolves.toMatchObject({ exists: true, name: null });
+    await expect(service.lookupByPhone('380671234567')).resolves.toMatchObject({
+      exists: true,
+      name: null,
+      pushname: null,
+    });
   });
 
   it('returns profilePic:null when there is no avatar URL', async () => {

@@ -9,7 +9,10 @@ import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 export interface ProfileLookupResult {
   chatId: string | null;
   exists: boolean | null;
+  /** Phonebook name of the contact, when this account has the number saved; null otherwise. */
   name: string | null;
+  /** The contact's own WhatsApp profile name (pushname); null when absent or unfetchable. */
+  pushname: string | null;
   profilePic: string | null;
 }
 
@@ -26,8 +29,10 @@ export interface ProfileLookupResult {
  * - An unregistered number is a normal verdict: HTTP 200 with `exists:false`, NOT a 404.
  * - A hung engine call (dead-but-ready socket) must not pin the request: the number lookup is
  *   bounded by `lookupTimeoutMs` and degrades to the same 503 the ERP already understands.
- * - Name/avatar are best-effort extras AFTER existence is confirmed (no junk calls to WA),
- *   each individually fault-tolerant so a missing avatar never fails the verdict.
+ * - Name (`name`/`pushname`) and avatar are best-effort extras AFTER existence is confirmed (no
+ *   junk calls to WA), each individually fault-tolerant so a missing avatar never fails the
+ *   verdict. `name` is the phonebook entry of this account; `pushname` is the contact's own WA
+ *   profile name — they stay separate, no fallback collapse.
  */
 @Injectable()
 export class ProfileService {
@@ -54,6 +59,7 @@ export class ProfileService {
         chatId: null,
         exists: null,
         name: null,
+        pushname: null,
         profilePic: null,
         error: 'invalid phone',
       });
@@ -77,14 +83,14 @@ export class ProfileService {
     }
 
     if (!chatId) {
-      return { chatId: `${phone}@c.us`, exists: false, name: null, profilePic: null };
+      return { chatId: `${phone}@c.us`, exists: false, name: null, pushname: null, profilePic: null };
     }
 
-    const [name, profilePic] = await Promise.all([
-      this.resolveName(engine, chatId),
+    const [{ name, pushname }, profilePic] = await Promise.all([
+      this.resolveContactNames(engine, chatId),
       this.resolveAvatar(engine, chatId),
     ]);
-    return { chatId, exists: true, name, profilePic };
+    return { chatId, exists: true, name, pushname, profilePic };
   }
 
   /**
@@ -105,14 +111,17 @@ export class ProfileService {
     return null;
   }
 
-  /** Pushname first (the contact's own WhatsApp profile name), phonebook name as fallback. */
-  private async resolveName(engine: IWhatsAppEngine, chatId: string): Promise<string | null> {
+  /** One `getContactById` call serves both fields: phonebook `name` and the contact's `pushname`. */
+  private async resolveContactNames(
+    engine: IWhatsAppEngine,
+    chatId: string,
+  ): Promise<{ name: string | null; pushname: string | null }> {
     try {
       const contact = await engine.getContactById(chatId);
-      return contact?.pushName ?? contact?.name ?? null;
+      return { name: contact?.name ?? null, pushname: contact?.pushName ?? null };
     } catch (error) {
       this.logger.warn(`Name lookup failed for ${chatId}: ${String(error)}`);
-      return null;
+      return { name: null, pushname: null };
     }
   }
 
